@@ -44,6 +44,17 @@ Get-Content ".env" | ForEach-Object {
   if ($_ -match '^\s*BRIDGE_PORT\s*=\s*([^\s#]+)') { $bridgePort = $Matches[1] }
 }
 
+# Idempotency guard: if a healthy bridge is already serving this port, do NOT launch a
+# second uvicorn. A second instance can't bind the port, exits immediately, and -- when
+# this script is the Task Scheduler action with RestartCount -- crash-loops (you'd see
+# "[comfy-bridge] starting" repeating). Redundant starts (manual run, preflight race,
+# double-trigger) thus become harmless no-ops. The watchdog still handles a dead/hung one.
+try {
+  $null = Invoke-RestMethod "http://127.0.0.1:${bridgePort}/comfy-bridge/gating" -TimeoutSec 3
+  Write-Host "[comfy-bridge] already healthy on :${bridgePort} - not starting a second instance." -ForegroundColor Yellow
+  exit 0
+} catch {}
+
 Write-Host "[comfy-bridge] starting on http://${bridgeHost}:${bridgePort}" -ForegroundColor Green
 
 # uvicorn logs to STDERR. Under $ErrorActionPreference='Stop', a native command's stderr

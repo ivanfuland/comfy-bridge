@@ -71,6 +71,16 @@ try {
   Ok ("bridge :8190 up (gating_enabled={0}, allowed={1}, hidden={2})" -f $g.gating_enabled, $g.allowed_node_classes.Count, $g.hidden_node_classes.Count)
 } catch { Bad "bridge :8190 not responding (Start-ScheduledTask -TaskName comfy-bridge)" }
 
+# A uv-created venv on Windows uses a trampoline python.exe that spawns the base python as
+# a child, so ONE healthy bridge == TWO python processes. That is normal, not a duplicate.
+# >2 means multiple bridge instances are fighting for :8190 (someone started it manually
+# while the scheduled task is also running) -> the loser crash-loops via RestartCount.
+if ($bridgeUp) {
+  $nproc = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*uvicorn*app.main*" }).Count
+  if ($nproc -le 2) { Ok "bridge process count = $nproc (1-2 is normal: uv venv trampoline + child)" }
+  else { Warn "bridge process count = $nproc (>2 => duplicate instances fighting :8190; stop manual starts, keep only the scheduled task)" }
+}
+
 # --- ComfyUI live (:8188) + prune applied ---
 try {
   $oi = Invoke-RestMethod http://127.0.0.1:8188/object_info -TimeoutSec 10
