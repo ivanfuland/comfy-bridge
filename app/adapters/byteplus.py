@@ -266,15 +266,33 @@ def _reshape_poll(payload, task_id: str) -> dict:
     if isinstance(inner, dict) and inner.get("status"):
         return _ensure_status_fields(inner, task_id)
 
-    # Fallback: map the outer envelope status into the Ark enum.
+    # Fallback: synthesize from the outer envelope when there's no Ark-shaped inner block.
     outer_status = str(data.get("status", "")).upper()
+    mapped = _OUTER_STATUS_MAP.get(outer_status, "running")
+    # Recover a downloadable url from the envelope (result_url, or a stray inner content)
+    # so a 'succeeded' never carries null content — the node reads content.video_url and
+    # would crash on None. A success with no url anywhere is unusable -> report failed
+    # (clearer than a crash or an endless poll).
+    video_url = data.get("result_url")
+    if not video_url and isinstance(data.get("data"), dict):
+        inner_content = data["data"].get("content")
+        if isinstance(inner_content, dict):
+            video_url = inner_content.get("video_url")
+    content = {"video_url": video_url} if video_url else None
+    err = data.get("error")
+    if mapped == "succeeded" and content is None:
+        mapped = "failed"
+        if not err:
+            err = {
+                "code": "comfy_bridge_no_video_url",
+                "message": "gateway reported success but returned no video_url/result_url",
+            }
     result: dict = {
         "id": data.get("task_id") or task_id,
         "model": "",
-        "status": _OUTER_STATUS_MAP.get(outer_status, "running"),
-        "content": None,
+        "status": mapped,
+        "content": content,
     }
-    err = data.get("error")
     if err:
         result["error"] = err if isinstance(err, dict) else {"code": "error", "message": str(err)}
     return result
@@ -364,7 +382,26 @@ class ByteplusAdapter(BaseAdapter):
         return _json_response({"asset_id": asset_id})
 
     def _asset_get(self, asset_id: str) -> Response:
-        rec = _SEEDANCE_ASSETS.get(asset_id, {})
+        rec = _SEEDANCE_ASSETS.get(asset_id)
+        if rec is None:
+            # Unknown id (stale asset_id, or _SEEDANCE_ASSETS wiped by a bridge restart):
+            # do NOT fake Active. Report Failed so the node's _wait_for_asset_active /
+            # _resolve_reference_assets surface a clear error up front, instead of accepting
+            # a phantom Active asset that only fails later at asset:// resolution.
+            return _json_response(
+                {
+                    "id": asset_id,
+                    "name": None,
+                    "url": None,
+                    "asset_type": "Image",
+                    "group_id": "comfy-bridge",
+                    "status": "Failed",
+                    "error": {
+                        "code": "comfy_bridge_asset_unknown",
+                        "message": f"unknown seedance asset {asset_id} (not in this bridge's registry)",
+                    },
+                }
+            )
         return _json_response(
             {
                 "id": asset_id,

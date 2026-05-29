@@ -261,6 +261,40 @@ def test_poll_fallback_outer_status(monkeypatch, tmp_path):
     assert got["content"] is None
 
 
+@respx.mock
+def test_poll_fallback_succeeded_recovers_result_url(monkeypatch, tmp_path):
+    """Outer SUCCESS without an inner data.data block must NOT return succeeded+null content
+    (the node reads content.video_url -> crash). Recover the url from envelope result_url."""
+    respx.get(f"{LEIHUO}/v1/video/generations/t3").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": "success", "data": {"task_id": "t3", "status": "SUCCESS", "result_url": "https://cdn/x.mp4"}},
+        )
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/byteplus/api/v3/contents/generations/tasks/t3")
+    assert r.status_code == 200
+    got = r.json()
+    assert got["status"] == "succeeded"
+    assert got["content"]["video_url"] == "https://cdn/x.mp4"
+
+
+@respx.mock
+def test_poll_fallback_succeeded_without_url_is_failed(monkeypatch, tmp_path):
+    """Success with no downloadable url anywhere is unusable -> report failed, not a
+    crash-inducing succeeded+null content."""
+    respx.get(f"{LEIHUO}/v1/video/generations/t4").mock(
+        return_value=httpx.Response(200, json={"code": "success", "data": {"task_id": "t4", "status": "SUCCESS"}})
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/byteplus/api/v3/contents/generations/tasks/t4")
+    assert r.status_code == 200
+    got = r.json()
+    assert got["status"] == "failed"
+    assert got["content"] is None
+    assert got["error"]["code"] == "comfy_bridge_no_video_url"
+
+
 # ── seedream image ──
 @respx.mock
 def test_seedream_image_base64_and_normalize(monkeypatch, tmp_path):
@@ -343,6 +377,17 @@ def test_seedance_asset_helper_create(monkeypatch, tmp_path):
     asset_id = r.json()["asset_id"]
     r2 = c.get(f"/proxy/seedance/assets/{asset_id}")
     assert r2.json()["status"] == "Active"
+
+
+def test_asset_get_unknown_is_failed(monkeypatch, tmp_path):
+    """Unknown asset_id (stale / bridge restart) must report Failed, not a phantom Active —
+    so the node surfaces the error up front instead of failing later at asset:// resolution."""
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/seedance/assets/does-not-exist")
+    assert r.status_code == 200
+    got = r.json()
+    assert got["status"] == "Failed"
+    assert got["error"]["code"] == "comfy_bridge_asset_unknown"
 
 
 def test_visual_validate_shim(monkeypatch, tmp_path):
