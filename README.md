@@ -29,6 +29,68 @@ ComfyUI 启动加 `--comfy-api-base=http://127.0.0.1:8190` 后，所有 `comfy_a
 
 ---
 
+## 版本兼容性与适配矩阵 ⚠️
+
+> **核心约束：bridge 不是通用透明代理。** 每个 adapter 都是对「**某个 ComfyUI 版本的 `comfy_api_nodes` 节点契约**」+「**某个供应商的 API 协议 / 模型版本**」做的**精确翻译**——它硬编码了节点类名、请求/响应字段路径、端点路径、模型名映射规则。**任一侧版本漂移都可能让适配静默失效**（菜单门控错位、字段重写漏改、404/424、或返回体校验崩）。升级 ComfyUI 或更换网关前，务必先核对本节。
+
+### 1. 当前验证基线
+
+| 组件 | 锁定 / 验证版本 | 出处 |
+|---|---|---|
+| ComfyUI core | **0.22.3** | `ComfyUI/comfyui_version.py` |
+| comfyui-frontend-package | 1.43.18 | `ComfyUI/requirements.txt` |
+| comfyui-workflow-templates | 0.9.85 | `ComfyUI/requirements.txt` |
+| comfyui-embedded-docs | 0.5.0 | `ComfyUI/requirements.txt` |
+| comfy-bridge | 0.1.0 | `pyproject.toml` |
+| Python | ≥ 3.12 | `pyproject.toml` |
+
+> adapter 引用的具体行号/字段路径都是针对 **ComfyUI 0.22.3 的 `comfy_api_nodes`** 校对的。升级 ComfyUI 后这些锚点可能位移——以源码注释里的「符号名」（类名/字段名）为准重新定位，行号仅供参考。
+
+### 2. ComfyUI ↔ bridge 的耦合点（为什么不能随意升 ComfyUI）
+
+| 耦合维度 | bridge 侧位置 | 依赖 ComfyUI 的什么 | 漂移后果 |
+|---|---|---|---|
+| **节点类名** | `app/config.py` `DEFAULT_ALLOWED_NODE_CLASSES` | `comfy_api_nodes` 各节点 `node_id`（如 `ClaudeNode`/`OpenAIChatNode`/`GeminiNanoBanana2`/`ByteDance2TextToVideoNode`） | 改名 → 门控白名单失配，节点被误灰显/误隐藏 |
+| **请求字段路径** | 各 adapter `_rewrite_body` | 节点发出的 JSON 结构：Anthropic `messages[].content[].source.url`、Gemini `contents[].parts[].fileData.fileUri`、Tripo `body.file`/`body.files`、Seedance `content[].role` | 改 schema → 资产重写漏改，网关收到 `127.0.0.1` 内网 URL 而失败 |
+| **端点路径** | 各 adapter `handle` | 节点请求的 vendor path（`/v1/responses`、`/v1/messages`、`/v1beta/models/{model}:generateContent`、`/v2/openapi/task`、Ark `api/v3/...`） | 改路由段 → 命中 424「无 handler」/ 404 |
+| **门控 vendor 推导** | custom_node 服务端剪枝 | 节点 `python_module`（如 `nodes_bytedance` → vendor `bytedance`） | 改模块名 → 厂商门控失效 |
+| **ComfyUI 内部行为** | `app/errors.py` | `util/client.py` 的 `_RETRY_STATUS={408,500,502,503,504}`、424 不触发「请先登录」、Tripo 节点 `pydantic` enum 对空串的处理 | 改重试集/校验 → 错误被吞或无限重试 |
+
+adapter ↔ 节点锚点速查（升级后用符号名重新定位）：
+- **OpenAI** → `nodes_openai.py`（responses create+poll，poll 逻辑约 :1170-1176）
+- **Anthropic** → `nodes_anthropic.py`（`AnthropicImageSourceUrl` 约 :147）+ `apis/anthropic.py`
+- **Gemini** → `nodes_gemini.py`（约 :48/:497/:710）+ `apis/gemini.py`
+- **Tripo** → `nodes_tripo.py`（约 :51/:285-289/:420-440）+ `apis/tripo.py`
+- **ByteDance/Seedance** → `nodes_bytedance.py`（Ark 端点 + `SEEDREAM_MODELS`/`SEEDANCE_MODELS` 表）
+
+### 3. 供应商协议 / 模型版本矩阵
+
+> 「当前型号」列是 **ComfyUI 0.22.3 的 `comfy_api_nodes` 现在暴露给前端的模型 ID**，会随 ComfyUI 升级而变。**你的网关后端必须真实支持这些型号**（或在网关侧做型号别名映射），否则节点能选但调用必失败。带日期戳的型号（`-251215` 等）尤其易随厂商更新而被替换。
+
+| 供应商 | 节点类 | bridge 端点 / 协议 | 鉴权 | 当前型号（comfy_api_nodes @ 0.22.3） | 网关侧要求 |
+|---|---|---|---|---|---|
+| **OpenAI** | `OpenAIChatNode` / `OpenAIGPTImage1` / `OpenAIGPTImageNodeV2` / `OpenAIDalle2` / `OpenAIDalle3` | `POST/GET /v1/responses`、`POST /v1/images/{generations,edits}` | `Authorization: Bearer` | `gpt-5.5-pro`/`gpt-5.5`/`gpt-5`/`gpt-5-mini`/`gpt-5-nano`；图：GPT-Image-1 / v2 / DALL·E 2,3 | 须实现 `/v1/responses`；`GET /v1/responses/{id}` 可缺（bridge 有终态缓存兜底）。base 填 origin-root，会自动去重 `/v1` |
+| **Anthropic** | `ClaudeNode` | `POST /v1/messages`（原生协议） | `x-api-key` + `anthropic-version: 2023-06-01` | `claude-opus-4-7`/`-4-6`、`claude-sonnet-4-6`/`-4-5-20250929`、`claude-haiku-4-5-20251001` | 网关须**原生支持 Anthropic `/v1/messages`**（非 OpenAI 兼容层）。base **不要**带 `/v1` |
+| **Gemini** | `GeminiNode` / `GeminiImageNode` / `GeminiImage2Node` / `GeminiNanoBanana2` / `GeminiNanoBanana2V2` | `POST /v1beta/models/{model}:generateContent`（节点的 Vertex 壳被译为 GL） | `x-goog-api-key`（AI Studio key） | 文本：`gemini-2.5-pro`/`-2.5-flash`/`-3-pro-preview`/`-3.1-pro-preview`/`-3.1-flash-lite-preview`；图：`gemini-3-pro-image-preview`、`gemini-3.1-flash-image-preview`(=Nano Banana 2) | 须支持 GL `v1beta generateContent` |
+| **Tripo** | `TripoImageToModelNode` / `TripoMultiviewToModelNode`（其余任务类型 e2e 验过，按需 `.env` 放行） | `POST /v2/openapi/task`、`GET .../task/{id}`、`POST /v2/openapi/upload` | `Authorization: Bearer` | Tripo v2 OpenAPI（image→3D、multiview→3D） | upload 返回字段名 `image_token`（若 API 漂移需复核） |
+| **ByteDance·Seedream（图）** | `ByteDanceImageNode` / `ByteDanceSeedreamNode` / `ByteDanceSeedreamNodeV2` | 节点 Ark `api/v3/images/generations` → 网关 `POST /v1/images/generations` | `Authorization: Bearer` | `seedream-5-0-260128`/`-4-5-251128`/`-4-0-250828`/`-3-0-t2i-250415`（bridge 加 `doubao-` 前缀） | 网易雷火网关方言；模型名映射见 `byteplus.py:_map_image_model` |
+| **ByteDance·Seedance（视频）** | 1.x：`ByteDanceTextToVideoNode`/`ImageToVideoNode`/`FirstLastFrameNode`/`ImageReferenceNode`；2.0：`ByteDance2TextToVideoNode`/`2FirstLastFrameNode`/`2ReferenceNode` | 节点 Ark `api/v3/contents/generations/tasks`(+poll) → 网关 `POST/GET /v1/video/generations` | `Authorization: Bearer` | 2.0：`dreamina-seedance-2-0-260128`/`-fast-260128`；1.x：`seedance-1-5-pro-251215`；已弃用：`seedance-1-0-lite-*-250428` | 1.x 参数内联在 prompt；2.0 分离字段（resolution/ratio/duration/seed/watermark）由 bridge 拼成 `--params` 后缀；模型名映射见 `_map_video_model` |
+
+> **ByteDance 三段路由 vs 门控 vendor 名不一致**（易踩坑）：adapter 注册三个路由段 `byteplus`/`byteplus-seedance2`/`seedance`（来自端点路径），共用一对 `BYTEPLUS_BASE_URL`/`BYTEPLUS_API_KEY`；而 `.env` 门控里写的是 **`bytedance`**（由 `python_module=nodes_bytedance` 推导）。两者名字不同，别混。
+
+### 4. 升级 checklist
+
+升级 ComfyUI / 切换网关 / 厂商出新模型时，按序核对：
+
+1. **升级前**：`git -C ComfyUI log --oneline` 留意 `comfy_api_nodes/` 的改动；记录当前 `comfyui_version.py`。
+2. **节点契约**：对照「§2 锚点速查」逐 adapter 复核——节点类名（`node_id`）、请求字段路径、端点路径是否变化；变了就同步改 `config.py` 白名单与对应 adapter。
+3. **模型型号**：对照「§3 当前型号」——`nodes_*.py` 里的模型 enum 是否新增/弃用日期戳型号；确认你的网关后端支持新型号，必要时更新 `byteplus.py` 的 `_map_*_model` 映射。
+4. **跑回归**：`pytest tests -q`（当前 60 passed）+ Windows `doctor.ps1`。
+5. **端到端**：用「§自测」的 curl 直打 bridge→网关，再在 ComfyUI 画布上各厂商各跑一次。
+6. **更新本节**：把新的「验证基线」版本号与型号回填到 §1/§3。
+
+---
+
 ## 快速开始
 
 ### Windows（推荐：一键）
@@ -145,7 +207,7 @@ powershell -ExecutionPolicy Bypass -File windows\doctor.ps1
 ```bash
 uv venv --python 3.12 .venv
 .venv/Scripts/python -m pip install -e ".[dev]"   # Windows；Linux 用 .venv/bin/python
-.venv/Scripts/python -m pytest tests -q           # 57 passed
+.venv/Scripts/python -m pytest tests -q           # 60 passed
 ```
 
 测试用 `BRIDGE_SKIP_DOTENV=1`（conftest）隔离，不读真实 `.env`。
@@ -178,7 +240,7 @@ comfy-bridge/
 │   ├── healthcheck-bridge.ps1#   看门狗健康检查
 │   └── *-task-scheduler.ps1  #   注册 / 卸载自启 + 看门狗
 ├── systemd/comfy-bridge.service
-├── tests/                    # pytest（57）
+├── tests/                    # pytest（60）
 ├── docs/WINDOWS-QUICKSTART.md
 ├── .env.example
 ├── pyproject.toml
