@@ -33,7 +33,7 @@ $TopVenvPy  = Join-Path $Workspace ".venv\Scripts\python.exe"
 $TopComfy   = Join-Path $Workspace ".venv\Scripts\comfy.exe"
 $ComfyPy    = Join-Path $ComfyDir ".venv\Scripts\python.exe"
 $BridgePy   = Join-Path $BridgeDir ".venv\Scripts\python.exe"
-$Bat        = Join-Path $Workspace "start-comfyui.bat"
+$Bat        = Join-Path $BridgeDir "windows\start-comfyui.bat"
 
 function Section($n) { Write-Host "`n=== $n ===" -ForegroundColor Cyan }
 function Info($m)    { Write-Host "  $m" }
@@ -80,24 +80,11 @@ if ($torchOk) {
 }
 
 # --- 2. start-comfyui.bat -----------------------------------------------------
+# Shipped in the repo (windows\start-comfyui.bat, relative paths). Just confirm it's there;
+# no per-machine generation -- keeps all .bat inside windows\ (this is a cross-platform repo).
 Section "2/8 start-comfyui.bat"
-if (Test-Path $Bat) {
-  Good "start-comfyui.bat exists - leaving as-is"
-} else {
-  $batBody = @"
-@echo off
-REM Only sanctioned way to launch ComfyUI: always carries --comfy-api-base (the ONLY thing
-REM keeping api_node requests off comfy.org billing) and pre-flights the bridge.
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "`$ok=`$false; for(`$i=0;`$i -lt 15;`$i++){ try{ Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating -TimeoutSec 2 ^| Out-Null; `$ok=`$true; break }catch{}; if(`$i -eq 0){ try{ Start-ScheduledTask -TaskName comfy-bridge }catch{} }; Start-Sleep -Seconds 2 }; if(`$ok){ Write-Host '[preflight] bridge ready' -ForegroundColor Green }else{ Write-Host '[preflight] bridge NOT ready - gating may fail-open (credits still safe via --comfy-api-base)' -ForegroundColor Yellow }"
-cd /d $ComfyDir
-call .venv\Scripts\activate.bat
-python main.py --listen 127.0.0.1 --port 8188 --comfy-api-base=http://127.0.0.1:8190
-pause
-"@
-  Set-Content -Path $Bat -Value $batBody -Encoding ASCII
-  Good "wrote $Bat"
-}
+if (Test-Path $Bat) { Good "launcher present: $Bat" }
+else { Warn "missing $Bat (expected in repo windows\ — pull latest)" }
 
 # --- 3. bridge venv + deps + tests -------------------------------------------
 Section "3/8 bridge venv"

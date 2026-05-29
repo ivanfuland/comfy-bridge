@@ -13,6 +13,7 @@ $ErrorActionPreference = "Stop"
 $BridgeDir = Split-Path -Parent $PSScriptRoot
 $LaunchScript = Join-Path $BridgeDir "windows\start-bridge.ps1"
 $HealthScript = Join-Path $BridgeDir "windows\healthcheck-bridge.ps1"
+$HiddenVbs = Join-Path $BridgeDir "windows\run-hidden.vbs"
 $LogFile = Join-Path $BridgeDir "logs\bridge.log"
 $TaskName = "comfy-bridge"
 $WatchdogName = "comfy-bridge-watchdog"
@@ -25,10 +26,13 @@ if (-not (Test-Path $LaunchScript)) {
 $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
 # ── Bridge service task ──────────────────────────────────────────────────────
-# -LogFile routes uvicorn output to a rotated logfile (hidden task has no console).
-# ExecutionTimeLimit 0 = NO limit: the default New-ScheduledTaskSettingsSet bakes in
-# PT72H, which would force-kill this long-running service every 3 days.
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$LaunchScript`" -LogFile `"$LogFile`""
+# Launch via wscript + run-hidden.vbs so there is NO desktop window to accidentally close
+# (-WindowStyle Hidden is not honored on some boxes and leaves a visible window = the bridge,
+# which a user can close and kill the service). The vbs runs PowerShell hidden AND waits, so
+# the task stays Running and restart-on-failure still works. -LogFile -> rotated logfile (Tee
+# also echoes to console, which is harmless when hidden). ExecutionTimeLimit 0 = NO limit
+# (default New-ScheduledTaskSettingsSet bakes in PT72H = force-kill every 3 days).
+$Action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$HiddenVbs`" `"$LaunchScript`" `"$LogFile`""
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 
@@ -41,7 +45,10 @@ Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Se
 # ── Watchdog task (every 5 min) ──────────────────────────────────────────────
 # Probes the HTTP endpoint and restarts the bridge on death/hang/stale-port. The bridge
 # task's own restart-on-failure only covers clean crash-exit; this covers the rest.
-$wdAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$HealthScript`""
+# Launch via wscript + run-hidden.vbs so the 5-min health check never flashes a console
+# window on the desktop (powershell.exe -WindowStyle Hidden still briefly flashes on some
+# interactive-logon setups; wscript Run(...,0) is truly windowless).
+$wdAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$HiddenVbs`" `"$HealthScript`""
 # -Once + RepetitionInterval with no duration => repeats indefinitely; +1min so it doesn't
 # race the bridge's own logon start.
 $wdTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval (New-TimeSpan -Minutes 5)

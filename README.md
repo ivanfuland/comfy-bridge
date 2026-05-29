@@ -37,11 +37,13 @@ ComfyUI 启动加 `--comfy-api-base=http://127.0.0.1:8190` 后，所有 `comfy_a
 cd C:\your\workspace
 git clone https://github.com/ivanfuland/comfy-bridge.git
 powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\bootstrap.ps1
-# 按提示输入网关 URL + key；完成后双击生成的 start-comfyui.bat
+# 按提示输入网关 URL + key；完成后双击 comfy-bridge\windows\start-comfyui.bat
 ```
 
-`bootstrap.ps1` 幂等地完成：前置检查 → 装 ComfyUI → 写启动脚本 → 建 bridge 环境跑测试 → 写 `.env` → 接入 custom_node → 注册自启 + 看门狗 → 启动 → 体检。
-详见 **[WINDOWS-QUICKSTART.md](WINDOWS-QUICKSTART.md)**（前置清单 / 刷新-重启规则 / 运维 / 常见问题）。
+所有 Windows 双击入口都在 `comfy-bridge\windows\`：`start-comfyui.bat`（启 ComfyUI）/ `start-bridge.bat`（改完 .env 重启 bridge 重载）/ `watch-bridge-log.bat`（看实时流量）。
+
+`bootstrap.ps1` 幂等地完成：前置检查 → 装 ComfyUI → 建 bridge 环境跑测试 → 写 `.env` → 接入 custom_node → 注册自启 + 看门狗 → 启动 → 体检。
+详见 **[docs/WINDOWS-QUICKSTART.md](docs/WINDOWS-QUICKSTART.md)**（前置清单 / 刷新-重启规则 / 运维 / 常见问题）。
 
 ### Linux（systemd user service）
 
@@ -122,14 +124,14 @@ powershell -ExecutionPolicy Bypass -File windows\doctor.ps1
 
 ## 运维
 
-| | Windows | Linux |
+| | Windows（.bat 在 `windows\`） | Linux |
 |---|---|---|
-| 服务管理 | `Start-/Stop-/Get-ScheduledTask -TaskName comfy-bridge` | `systemctl --user start/stop/status comfy-bridge` |
-| 日志 | `logs\bridge.log`（重启滚动到 `.1`） | `journalctl --user -u comfy-bridge -f` |
+| 启动 / 重启重载 .env | 双击 `windows\start-bridge.bat`（隐藏后台服务，无窗口） | `systemctl --user restart comfy-bridge` |
+| 看日志 / 流量 | 双击 `windows\watch-bridge-log.bat` 或看 `logs\bridge.log`（每笔 `→`/`←`） | `journalctl --user -u comfy-bridge -f` |
 | 自愈 | `comfy-bridge-watchdog` 任务每 5min 健康探测 + 重启 | systemd `Restart=on-failure` |
-| 升级 | `git pull` → 重启 bridge（symlink 自动同步 custom_node） | 同左 |
+| 升级 | `git pull` → 双击 `windows\start-bridge.bat`（symlink 自动同步 custom_node） | `git pull` → restart |
 
-> Windows 重启 bridge 须先清端口：`Stop-ScheduledTask` → `Get-NetTCPConnection -LocalPort 8190 | %{ Stop-Process -Id $_.OwningProcess -Force }` → `Start-ScheduledTask`（`Stop-ScheduledTask` 不杀子进程）。
+> Windows `start-bridge.bat` 做的是正确重启：停任务 → 清 8190 端口（`Stop-ScheduledTask` 不杀子进程）→ 起任务（重载 .env）。**别直接跑 `start-bridge.ps1`**——它有幂等守卫，见服务健康即退出、不重载。
 
 > **Windows 上一个 bridge = 两个 `python.exe` 是正常的**：uv venv 的 `python.exe` 是 trampoline（跳板），运行时 spawn base python 作子进程（Windows 无 `exec()`）。判健康看 `doctor.ps1` 或 `:8190` 的 owner 是否稳定，**别数进程数**。启动脚本带幂等守卫（已健康则不再起第二个），重复启动是无害 no-op；勿在自启任务运行时手动 `start-bridge`（要前台调试先 `Stop-ScheduledTask`）。
 
@@ -162,17 +164,21 @@ comfy-bridge/
 ├── custom_nodes/comfy-bridge-gating/
 │   ├── __init__.py           #   服务端剪枝（厂商隐藏 + 按类硬隐藏）
 │   └── web/...js             #   前端灰显「未适配」
-├── windows/
+├── windows/                  # 所有 Windows .bat/.ps1/.vbs 都在这（跨平台，不放根目录）
 │   ├── bootstrap.ps1         #   一键安装（幂等）
 │   ├── doctor.ps1            #   体检
-│   ├── start-bridge.ps1/.bat #   启动器（自启进程写日志）
+│   ├── start-comfyui.bat     #   双击启 ComfyUI（相对路径）
+│   ├── start-bridge.bat      #   双击重启 bridge + 重载 .env
+│   ├── watch-bridge-log.bat  #   双击看实时流量
+│   ├── start-bridge.ps1      #   服务启动器（任务经 run-hidden.vbs 调用）
+│   ├── run-hidden.vbs        #   无窗口启动器（隐藏服务）
 │   ├── healthcheck-bridge.ps1#   看门狗健康检查
 │   └── *-task-scheduler.ps1  #   注册 / 卸载自启 + 看门狗
 ├── systemd/comfy-bridge.service
-├── tests/                    # pytest（41）
+├── tests/                    # pytest（42）
+├── docs/WINDOWS-QUICKSTART.md
 ├── .env.example
 ├── pyproject.toml
-├── WINDOWS-QUICKSTART.md
 └── README.md
 ```
 
