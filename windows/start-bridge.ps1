@@ -72,11 +72,12 @@ if ($LogFile) {
     if (Test-Path $prev) { Remove-Item $prev -Force -ErrorAction SilentlyContinue }
     Move-Item $LogFile $prev -Force -ErrorAction SilentlyContinue
   }
-  "[comfy-bridge] $(Get-Date -Format o) starting on http://${bridgeHost}:${bridgePort}" | Out-File -FilePath $LogFile -Encoding utf8
-  # 2>&1 merges uvicorn's stderr logs into the pipeline; Out-File -Encoding utf8 keeps the
-  # log readable (Win-PS 5.1 Tee-Object has no -Encoding and would write UTF-16). The hidden
-  # scheduled task has no console anyway -- the file is the only sink that matters here.
-  & $Python -m uvicorn app.main:app --host $bridgeHost --port $bridgePort 2>&1 | Out-File -FilePath $LogFile -Append -Encoding utf8
+  # 2>&1 merges uvicorn's stderr logs into the pipeline; Tee writes the file AND echoes to
+  # the console — so when the scheduled task's window is visible (e.g. -WindowStyle Hidden
+  # not honored on this box), you see live traffic there too, not just in the file.
+  # Tee owns the whole file (UTF-16+BOM on Win-PS 5.1) so Get-Content / watch-bridge-log.bat
+  # decode it cleanly (don't pre-write a UTF-8 header — mixed encoding garbles the read).
+  & $Python -u -m uvicorn app.main:app --host $bridgeHost --port $bridgePort 2>&1 | Tee-Object -FilePath $LogFile
 } else {
-  & $Python -m uvicorn app.main:app --host $bridgeHost --port $bridgePort
+  & $Python -u -m uvicorn app.main:app --host $bridgeHost --port $bridgePort
 }
