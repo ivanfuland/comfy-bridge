@@ -54,6 +54,32 @@ def test_responses_get_poll(monkeypatch):
 
 
 @respx.mock
+def test_responses_poll_served_from_cache_when_upstream_lacks_retrieve(monkeypatch):
+    """ComfyUI creates then polls. When upstream implements POST create (terminal body)
+    but NOT GET retrieve (404 Invalid URL), the poll must be served from the create cache."""
+    respx.post("https://api.openai.com/v1/responses").mock(
+        return_value=httpx.Response(
+            200, json={"id": "resp_abc", "status": "completed", "output": [{"x": 1}]}
+        )
+    )
+    get_route = respx.get("https://api.openai.com/v1/responses/resp_abc").mock(
+        return_value=httpx.Response(
+            404, json={"error": {"message": "Invalid URL (GET /v1/responses/resp_abc)"}}
+        )
+    )
+    c = _client(monkeypatch)
+    created = c.post("/proxy/openai/v1/responses", json={"model": "gpt-5.4", "input": "hi"})
+    assert created.status_code == 200 and created.json()["id"] == "resp_abc"
+
+    polled = c.get("/proxy/openai/v1/responses/resp_abc")
+    assert polled.status_code == 200
+    assert polled.json()["status"] == "completed"
+    assert polled.json()["output"] == [{"x": 1}]
+    # cache hit => upstream GET (which would 404) is never called
+    assert not get_route.called
+
+
+@respx.mock
 def test_images_generations_with_custom_base(monkeypatch):
     route = respx.post("https://llm.example.com/v1/images/generations").mock(
         return_value=httpx.Response(200, json={"data": [{"b64_json": "QUJD"}]})
