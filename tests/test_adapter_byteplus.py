@@ -1,0 +1,382 @@
+"""ByteDance/Seedance adapter tests (spec §"翻译/Shim 设计").
+
+Covers the three route vendor segments the one adapter registers:
+  byteplus            — video create (1.x inline params + 2.0 separate->inline) + seedream image
+  byteplus-seedance2  — 2.0 poll prefix -> same upstream /v1/video/generations/{id}
+  seedance            — virtual-library / asset / visual-validate shims (no upstream)
+
+All upstream calls target the leihuo default base (https://ai.leihuo.netease.com),
+mocked via respx exactly like test_adapter_tripo.py.
+"""
+import base64
+import importlib
+import json
+import os
+import uuid
+
+import httpx
+import respx
+from fastapi.testclient import TestClient
+
+LEIHUO = "https://ai.leihuo.netease.com"
+
+
+def _client(monkeypatch, tmp_path, **env):
+    env.setdefault("BYTEPLUS_API_KEY", "bk-test")
+    monkeypatch.setenv("BRIDGE_ASSET_DIR", str(tmp_path))
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    from app import config as cfg_mod
+    importlib.reload(cfg_mod)
+    from app import assets as assets_mod
+    importlib.reload(assets_mod)
+    from app.adapters import base as base_mod
+    importlib.reload(base_mod)
+    from app.adapters import byteplus as bp_mod
+    importlib.reload(bp_mod)  # top-level register() runs on import; also resets _SEEDANCE_ASSETS
+    from app import main as main_mod
+    importlib.reload(main_mod)
+    return TestClient(main_mod.app), assets_mod
+
+
+def _seed(assets_mod, tmp_path, data=b"IMGBYTES", mime="image/png"):
+    aid = uuid.uuid4().hex
+    path = os.path.join(str(tmp_path), aid)
+    with open(path, "wb") as f:
+        f.write(data)
+    assets_mod._REGISTRY[aid] = assets_mod.AssetRecord(
+        asset_id=aid, file_name="x.png", media_type=mime, path=path
+    )
+    return aid
+
+
+def _decode_data_uri(uri: str) -> bytes:
+    assert uri.startswith("data:"), uri
+    return base64.b64decode(uri.split(",", 1)[1])
+
+
+# ── video create: Seedance 1.x (params already inline in content text) ──
+@respx.mock
+def test_v1_text_to_video_create(monkeypatch, tmp_path):
+    captured = {}
+
+    def _create(request):
+        captured["body"] = json.loads(request.content)
+        captured["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"id": "task_1", "task_id": "task_1", "status": "queued"})
+
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(side_effect=_create)
+    c, _ = _client(monkeypatch, tmp_path)
+    body = {
+        "model": "seedance-1-5-pro-251215",
+        "content": [{"type": "text", "text": "a cat --resolution 720p --ratio 16:9 --duration 5"}],
+        "generate_audio": False,
+    }
+    r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200
+    assert captured["auth"] == "Bearer bk-test"
+    assert captured["body"]["model"] == "doubao-seedance-1-5-pro-251215"
+    # 1.x prompt passes through verbatim (params already inline; not duplicated)
+    assert captured["body"]["prompt"] == "a cat --resolution 720p --ratio 16:9 --duration 5"
+    assert "image_url" not in captured["body"]
+    assert r.json()["id"] == "task_1"
+
+
+@respx.mock
+def test_v1_image_to_video_base64(monkeypatch, tmp_path):
+    captured = {}
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(
+        side_effect=lambda req: captured.update(body=json.loads(req.content))
+        or httpx.Response(200, json={"id": "t"})
+    )
+    c, assets_mod = _client(monkeypatch, tmp_path)
+    aid = _seed(assets_mod, tmp_path, data=b"FRAME0")
+    body = {
+        "model": "seedance-1-0-pro-fast-251015",
+        "content": [
+            {"type": "text", "text": "move --resolution 480p"},
+            {"type": "image_url", "image_url": {"url": f"http://127.0.0.1:8190/asset/{aid}"}},
+        ],
+        "generate_audio": None,
+    }
+    r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200
+    # single image, no role -> image_url, resolved to base64 data-uri
+    assert _decode_data_uri(captured["body"]["image_url"]) == b"FRAME0"
+    assert captured["body"]["model"] == "doubao-seedance-1-0-pro-fast-251015"
+
+
+@respx.mock
+def test_v1_first_last_frame_roles(monkeypatch, tmp_path):
+    captured = {}
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(
+        side_effect=lambda req: captured.update(body=json.loads(req.content))
+        or httpx.Response(200, json={"id": "t"})
+    )
+    c, assets_mod = _client(monkeypatch, tmp_path)
+    a_first = _seed(assets_mod, tmp_path, data=b"FIRST")
+    a_last = _seed(assets_mod, tmp_path, data=b"LAST")
+    body = {
+        "model": "seedance-1-5-pro-251215",
+        "content": [
+            {"type": "text", "text": "p --resolution 720p"},
+            {"type": "image_url", "image_url": {"url": f"http://127.0.0.1:8190/asset/{a_first}"}, "role": "first_frame"},
+            {"type": "image_url", "image_url": {"url": f"http://127.0.0.1:8190/asset/{a_last}"}, "role": "last_frame"},
+        ],
+        "generate_audio": True,
+    }
+    r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200
+    assert _decode_data_uri(captured["body"]["first_frame_image"]) == b"FIRST"
+    assert _decode_data_uri(captured["body"]["last_frame_image"]) == b"LAST"
+    assert "image_url" not in captured["body"]
+
+
+@respx.mock
+def test_v1_reference_images(monkeypatch, tmp_path):
+    captured = {}
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(
+        side_effect=lambda req: captured.update(body=json.loads(req.content))
+        or httpx.Response(200, json={"id": "t"})
+    )
+    c, assets_mod = _client(monkeypatch, tmp_path)
+    a1 = _seed(assets_mod, tmp_path, data=b"REF1")
+    a2 = _seed(assets_mod, tmp_path, data=b"REF2")
+    body = {
+        "model": "seedance-1-0-lite-i2v-250428",
+        "content": [
+            {"type": "text", "text": "p --resolution 480p"},
+            {"type": "image_url", "image_url": {"url": f"http://127.0.0.1:8190/asset/{a1}"}, "role": "reference_image"},
+            {"type": "image_url", "image_url": {"url": f"http://127.0.0.1:8190/asset/{a2}"}, "role": "reference_image"},
+        ],
+        "generate_audio": None,
+    }
+    r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200
+    refs = captured["body"]["reference_images"]
+    assert len(refs) == 2
+    assert _decode_data_uri(refs[0]) == b"REF1"
+    assert _decode_data_uri(refs[1]) == b"REF2"
+
+
+# ── video create: Seedance 2.0 (separate fields -> appended --params) ──
+@respx.mock
+def test_v2_create_appends_params(monkeypatch, tmp_path):
+    captured = {}
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(
+        side_effect=lambda req: captured.update(body=json.loads(req.content))
+        or httpx.Response(200, json={"id": "task_v2"})
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    body = {
+        "model": "dreamina-seedance-2-0-260128",
+        "content": [{"type": "text", "text": "a dragon"}],
+        "generate_audio": True,
+        "resolution": "1080p",
+        "ratio": "16:9",
+        "duration": 7,
+        "seed": 42,
+        "watermark": False,
+    }
+    r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200
+    assert captured["body"]["model"] == "doubao-seedance-2-0-260128"
+    prompt = captured["body"]["prompt"]
+    assert prompt.startswith("a dragon ")
+    assert "--resolution 1080p" in prompt
+    assert "--ratio 16:9" in prompt
+    assert "--duration 7" in prompt
+    assert "--seed 42" in prompt
+    assert "--watermark false" in prompt
+    assert r.json()["id"] == "task_v2"
+
+
+@respx.mock
+def test_v2_fast_model_mapping(monkeypatch, tmp_path):
+    captured = {}
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(
+        side_effect=lambda req: captured.update(body=json.loads(req.content))
+        or httpx.Response(200, json={"id": "t"})
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    body = {
+        "model": "dreamina-seedance-2-0-fast-260128",
+        "content": [{"type": "text", "text": "x"}],
+        "resolution": "720p",
+        "duration": 4,
+    }
+    c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert captured["body"]["model"] == "doubao-seedance-2-0-fast-260128"
+
+
+# ── video poll: both prefixes -> /v1/video/generations/{id} ──
+@respx.mock
+def test_v2_poll_seedance2_prefix(monkeypatch, tmp_path):
+    inner = {
+        "id": "task_x",
+        "model": "doubao-seedance-2-0-260128",
+        "status": "succeeded",
+        "content": {"video_url": "https://cdn.example/v.mp4"},
+        "usage": {"total_tokens": 100, "completion_tokens": 50},
+    }
+    respx.get(f"{LEIHUO}/v1/video/generations/task_x").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": "success", "data": {"task_id": "task_x", "status": "SUCCESS", "progress": "100%", "data": inner}},
+        )
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/task_x")
+    assert r.status_code == 200
+    got = r.json()
+    assert got["status"] == "succeeded"
+    assert got["content"]["video_url"] == "https://cdn.example/v.mp4"
+    assert got["id"] == "task_x"
+
+
+@respx.mock
+def test_v1_poll_byteplus_prefix(monkeypatch, tmp_path):
+    inner = {"id": "t9", "model": "doubao-seedance-1-5-pro-251215", "status": "running", "content": None}
+    respx.get(f"{LEIHUO}/v1/video/generations/t9").mock(
+        return_value=httpx.Response(200, json={"code": "success", "data": {"task_id": "t9", "status": "IN_PROGRESS", "data": inner}})
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/byteplus/api/v3/contents/generations/tasks/t9")
+    assert r.status_code == 200
+    assert r.json()["status"] == "running"
+
+
+@respx.mock
+def test_poll_fallback_outer_status(monkeypatch, tmp_path):
+    """No inner data.data block -> synthesize from the outer envelope status."""
+    respx.get(f"{LEIHUO}/v1/video/generations/t2").mock(
+        return_value=httpx.Response(200, json={"code": "success", "data": {"task_id": "t2", "status": "IN_PROGRESS", "progress": "30%"}})
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/byteplus/api/v3/contents/generations/tasks/t2")
+    assert r.status_code == 200
+    got = r.json()
+    assert got["status"] == "running"
+    assert got["id"] == "t2"
+    assert got["content"] is None
+
+
+# ── seedream image ──
+@respx.mock
+def test_seedream_image_base64_and_normalize(monkeypatch, tmp_path):
+    captured = {}
+
+    def _img(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"model": "doubao-seedream-4-5-251128", "created": 123, "data": [{"url": "https://cdn/img.png"}]})
+
+    respx.post(f"{LEIHUO}/v1/images/generations").mock(side_effect=_img)
+    c, assets_mod = _client(monkeypatch, tmp_path)
+    aid = _seed(assets_mod, tmp_path, data=b"REFIMG")
+    body = {
+        "model": "seedream-4-5-251128",
+        "prompt": "edit this",
+        "image": [f"http://127.0.0.1:8190/asset/{aid}"],
+        "size": "2048x2048",
+        "seed": 0,
+        "watermark": False,
+        "response_format": "url",
+    }
+    r = c.post("/proxy/byteplus/api/v3/images/generations", json=body)
+    assert r.status_code == 200
+    assert captured["body"]["model"] == "doubao-seedream-4-5-251128"
+    assert _decode_data_uri(captured["body"]["image"][0]) == b"REFIMG"
+    got = r.json()
+    assert got["data"][0]["url"] == "https://cdn/img.png"
+    assert got["error"] == {}
+    assert got["model"] == "doubao-seedream-4-5-251128"
+    assert got["created"] == 123
+
+
+# ── 2.0 virtual-library shim + asset:// resolution ──
+@respx.mock
+def test_virtual_library_shim_and_asset_resolution(monkeypatch, tmp_path):
+    captured = {}
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(
+        side_effect=lambda req: captured.update(body=json.loads(req.content))
+        or httpx.Response(200, json={"id": "t"})
+    )
+    c, assets_mod = _client(monkeypatch, tmp_path)
+    aid = _seed(assets_mod, tmp_path, data=b"VLFRAME")
+    bridge_url = f"http://127.0.0.1:8190/asset/{aid}"
+
+    # 1) node uploads image into virtual library -> shim returns an asset_id
+    r1 = c.post("/proxy/seedance/virtual-library/assets", json={"url": bridge_url, "hash": "deadbeef"})
+    assert r1.status_code == 200
+    asset_id = r1.json()["asset_id"]
+
+    # 2) node polls the asset until Active
+    r2 = c.get(f"/proxy/seedance/assets/{asset_id}")
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "Active"
+    assert r2.json()["asset_type"] == "Image"
+
+    # 3) 2.0 FLF create with content carrying asset://{id} -> resolved to base64
+    body = {
+        "model": "dreamina-seedance-2-0-260128",
+        "content": [
+            {"type": "text", "text": "animate"},
+            {"type": "image_url", "image_url": {"url": f"asset://{asset_id}"}, "role": "first_frame"},
+        ],
+        "resolution": "720p",
+        "ratio": "adaptive",
+        "duration": 5,
+    }
+    r3 = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r3.status_code == 200
+    assert _decode_data_uri(captured["body"]["first_frame_image"]) == b"VLFRAME"
+
+
+@respx.mock
+def test_seedance_asset_helper_create(monkeypatch, tmp_path):
+    """The optional /proxy/seedance/assets POST (asset-helper nodes) stores + returns id."""
+    c, assets_mod = _client(monkeypatch, tmp_path)
+    aid = _seed(assets_mod, tmp_path, data=b"HELPER")
+    bridge_url = f"http://127.0.0.1:8190/asset/{aid}"
+    r = c.post("/proxy/seedance/assets", json={"group_id": "g1", "url": bridge_url, "asset_type": "Image", "name": "n"})
+    assert r.status_code == 200
+    asset_id = r.json()["asset_id"]
+    r2 = c.get(f"/proxy/seedance/assets/{asset_id}")
+    assert r2.json()["status"] == "Active"
+
+
+def test_visual_validate_shim(monkeypatch, tmp_path):
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.post("/proxy/seedance/visual-validate/sessions", json={})
+    assert r.status_code == 200
+    session_id = r.json()["session_id"]
+    assert r.json()["h5_link"] == ""
+    r2 = c.get(f"/proxy/seedance/visual-validate/sessions/{session_id}")
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "completed"
+    assert r2.json()["group_id"]
+
+
+def test_missing_key_returns_424(monkeypatch, tmp_path):
+    c, _ = _client(monkeypatch, tmp_path, BYTEPLUS_API_KEY="")
+    monkeypatch.delenv("BYTEPLUS_API_KEY", raising=False)
+    r = c.post(
+        "/proxy/byteplus/api/v3/contents/generations/tasks",
+        json={"model": "seedance-1-5-pro-251215", "content": [{"type": "text", "text": "x"}], "generate_audio": False},
+    )
+    assert r.status_code == 424
+    assert "byteplus" in r.json()["error"]["message"]
+
+
+@respx.mock
+def test_vendor_error_surfaced(monkeypatch, tmp_path):
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(
+        return_value=httpx.Response(400, json={"error": {"message": "model_not_found"}})
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.post(
+        "/proxy/byteplus/api/v3/contents/generations/tasks",
+        json={"model": "seedance-1-5-pro-251215", "content": [{"type": "text", "text": "x"}], "generate_audio": False},
+    )
+    assert r.status_code == 400
+    assert "comfy-bridge upstream" in r.json()["error"]["message"]
