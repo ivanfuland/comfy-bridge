@@ -131,6 +131,8 @@ powershell -ExecutionPolicy Bypass -File windows\doctor.ps1
 
 > Windows 重启 bridge 须先清端口：`Stop-ScheduledTask` → `Get-NetTCPConnection -LocalPort 8190 | %{ Stop-Process -Id $_.OwningProcess -Force }` → `Start-ScheduledTask`（`Stop-ScheduledTask` 不杀子进程）。
 
+> **Windows 上一个 bridge = 两个 `python.exe` 是正常的**：uv venv 的 `python.exe` 是 trampoline（跳板），运行时 spawn base python 作子进程（Windows 无 `exec()`）。判健康看 `doctor.ps1` 或 `:8190` 的 owner 是否稳定，**别数进程数**。启动脚本带幂等守卫（已健康则不再起第二个），重复启动是无害 no-op；勿在自启任务运行时手动 `start-bridge`（要前台调试先 `Stop-ScheduledTask`）。
+
 ---
 
 ## 开发

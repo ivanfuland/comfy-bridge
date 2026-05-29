@@ -93,6 +93,7 @@ Start-ScheduledTask -TaskName comfy-bridge
 | 节点报 424 `未配置` | `.env` 里对应厂商的 KEY 空。填上，重启 bridge |
 | 菜单还显示全部/灰显没生效 | 看 §4：硬隐藏要重启 ComfyUI，灰显/JS 要硬刷新 |
 | Tripo 报 `data.status` 校验失败 | 已由 bridge 自动修复；确认 bridge 是最新版（`git pull`） |
+| 看着像「一直挂掉重启」/ 任务管理器两个 python | **多半是误会**：一个 bridge = 两个 `python.exe`（uv 跳板 + 子进程）属正常。真挂掉看 `doctor.ps1` / `:8190` owner 是否稳定。启动脚本已带幂等守卫，重复启动无害；**别在自启任务运行时手动 `start-bridge`** |
 | bridge 起不来 / 端口被占 | 按 §4 正确姿势重启；或看 `logs\bridge.log` |
 | 一切看着不对 | 先跑 `doctor.ps1`，按 FAIL 项处理 |
 | symlink 失败 | 开 Windows 开发者模式后重跑 bootstrap（或接受复制版） |
