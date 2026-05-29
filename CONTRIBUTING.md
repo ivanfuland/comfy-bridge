@@ -71,6 +71,10 @@ CI 在 `.github/workflows/ci.yml`，对 push/PR 到 `master` 用 Python 3.12 跑
 3. **门控（不改代码）**：节点显隐全走 `.env` —— `BRIDGE_ALLOWED_VENDORS` / `BRIDGE_ALLOWED_NODE_CLASSES`（灰显「未适配」）/ `BRIDGE_HIDDEN_NODE_CLASSES`（菜单硬隐藏），覆盖 `config.py` 的 `DEFAULT_ALLOWED_*` 基线。**别把节点名硬编码进 `gating.py`**。
 4. 配套写测试（见下）。
 
+> **进阶模式（多路由段 / Ark↔网关翻译 / shim）**：参考 `app/adapters/byteplus.py`（ByteDance/Seedance）。一个 adapter 实例可 `register()` 到**多个路由段**（`byteplus`/`byteplus-seedance2`/`seedance`），在 `handle` 里按 `path`+`method` 分发；它把 ComfyUI 的 Volcengine-Ark 方言重塑成网关方言（路径 / 请求体 / 响应 / 模型名），并对网关不需要的 comfy.org 专属端点（资产上传、真人认证）做本地 **shim**（直接返回节点期望的形状，不走上游、不需 key）。
+> ⚠️ **门控 vendor 名 ≠ 路由段名**：门控 vendor 由节点 `python_module=nodes_<x>` 推导（ByteDance = `bytedance`），写进 `BRIDGE_ALLOWED_VENDORS`；而路由段名来自端点路径（`byteplus` 等），是 adapter `register()` 的 key。两者可能不同，配 `.env` 与注册 adapter 时别混。
+> ⚠️ **本地资源够不到上游**：bridge 内部 asset URL（`127.0.0.1:8190/asset/{id}`）与自定义 scheme（如 `asset://{id}`）必须在 adapter 内 resolve 成 base64 data-URI 或厂商上传 token 再发上游（用 `base.is_bridge_asset_url` / `resolve_asset_to_base64`），切勿把 localhost URL 透传给上游。
+
 ## 测试约定
 
 - `tests/` 用 `pytest` + `respx`（mock 上游 HTTP）+ FastAPI `TestClient`。

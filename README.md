@@ -1,6 +1,6 @@
 # comfy-bridge
 
-> 自托管 FastAPI 代理，让 ComfyUI 官方 `comfy_api_nodes`（OpenAI / Anthropic / Gemini / Tripo）改走你自己的 key 或 LLM 网关，**绕开 comfy.org 计费**；并通过 custom_node 把菜单收敛到你实际支持的节点。
+> 自托管 FastAPI 代理，让 ComfyUI 官方 `comfy_api_nodes`（OpenAI / Anthropic / Gemini / Tripo / ByteDance·Seedance）改走你自己的 key 或 LLM 网关，**绕开 comfy.org 计费**；并通过 custom_node 把菜单收敛到你实际支持的节点。
 
 跨平台：**Windows**（一键脚本 + Task Scheduler 自启 + 看门狗）/ **Linux**（systemd user service）。
 
@@ -21,8 +21,8 @@ ComfyUI 启动加 `--comfy-api-base=http://127.0.0.1:8190` 后，所有 `comfy_a
 
 ## 特性
 
-- **一把 key 多厂商**：OpenAI / Anthropic / Gemini / Tripo，各自独立 base URL + key，按需启用。
-- **协议适配**：OpenAI `/v1/responses`、Anthropic 原生 `/v1/messages`（+ `x-api-key`）、Gemini `generateContent`、Tripo `/v2/openapi/task`，含图片 / 多模态引用重写。
+- **一把 key 多厂商**：OpenAI / Anthropic / Gemini / Tripo / ByteDance·Seedance，各自独立 base URL + key，按需启用。
+- **协议适配**：OpenAI `/v1/responses`、Anthropic 原生 `/v1/messages`（+ `x-api-key`）、Gemini `generateContent`、Tripo `/v2/openapi/task`、ByteDance/Seedance 视频 `/v1/video/generations` + Seedream 图 `/v1/images/generations`（Ark 方言↔网关方言翻译，含 1.x/2.0 视频与图生资产 base64 重写、virtual-library/资产/认证 shim），含图片 / 多模态引用重写。
 - **三层节点门控**（全部 `.env` 配置，不改代码）：厂商级隐藏 / 按类硬隐藏 / 按类灰显「未适配」。
 - **Windows 开箱即用**：一键安装 `bootstrap.ps1`、体检 `doctor.ps1`、登录自启 + 每 5 分钟健康自愈的看门狗。
 - **零侵入**：不改 ComfyUI 源码，全部能力在并列的 custom_node + 独立代理进程里。
@@ -88,6 +88,7 @@ curl http://127.0.0.1:8190/comfy-bridge/gating
 | `ANTHROPIC_VERSION` | `2023-06-01` | `anthropic-version` 头 |
 | `GEMINI_BASE_URL` / `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com` / — | Gemini |
 | `TRIPO_BASE_URL` / `TRIPO_API_KEY` | `https://api.tripo3d.ai` / — | Tripo |
+| `BYTEPLUS_BASE_URL` / `BYTEPLUS_API_KEY` | — | ByteDance/Seedance（Seedream 图 + Seedance 1.x/2.0 视频）；三个路由段 `byteplus`/`byteplus-seedance2`/`seedance` 共用此对 |
 
 > 只填要用的厂商；缺 key 的厂商节点返回 HTTP 424「未配置」，不影响其它。base URL 填 origin-root（OpenAI 会自动去重 `/v1`，Anthropic **不要**带 `/v1`）。
 
@@ -100,6 +101,8 @@ curl http://127.0.0.1:8190/comfy-bridge/gating
 | 按类灰显 | `BRIDGE_ALLOWED_NODE_CLASSES` | 允许厂商但不在白名单的类，画布上灰显「未适配」并禁用 | 前端硬刷新 |
 
 > 改 `*_BASE_URL` / `*_API_KEY` 等后端配置只需**重启 bridge**，无需刷新前端。
+
+> **ByteDance/Seedance 门控小坑**：`BRIDGE_ALLOWED_VENDORS` 里写的是 **`bytedance`**（门控 vendor 由节点 `python_module=nodes_bytedance` 推导），而 adapter 注册的路由段是 `byteplus`/`byteplus-seedance2`/`seedance`（来自端点路径）—— 两者名字不同，别混。
 
 ---
 
@@ -142,7 +145,7 @@ powershell -ExecutionPolicy Bypass -File windows\doctor.ps1
 ```bash
 uv venv --python 3.12 .venv
 .venv/Scripts/python -m pip install -e ".[dev]"   # Windows；Linux 用 .venv/bin/python
-.venv/Scripts/python -m pytest tests -q           # 41 passed
+.venv/Scripts/python -m pytest tests -q           # 57 passed
 ```
 
 测试用 `BRIDGE_SKIP_DOTENV=1`（conftest）隔离，不读真实 `.env`。
@@ -156,7 +159,7 @@ comfy-bridge/
 ├── app/                      # FastAPI 后端
 │   ├── main.py               #   app 工厂、路由、CORS
 │   ├── router.py             #   /proxy/{vendor}/{path} 分发
-│   ├── adapters/             #   openai / anthropic / gemini / tripo + base
+│   ├── adapters/             #   openai / anthropic / gemini / tripo / byteplus + base
 │   ├── assets.py             #   本地资源 slot
 │   ├── gating.py             #   GET /comfy-bridge/gating
 │   ├── config.py             #   .env 配置 + 门控基线默认
@@ -175,7 +178,7 @@ comfy-bridge/
 │   ├── healthcheck-bridge.ps1#   看门狗健康检查
 │   └── *-task-scheduler.ps1  #   注册 / 卸载自启 + 看门狗
 ├── systemd/comfy-bridge.service
-├── tests/                    # pytest（42）
+├── tests/                    # pytest（57）
 ├── docs/WINDOWS-QUICKSTART.md
 ├── .env.example
 ├── pyproject.toml
