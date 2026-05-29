@@ -19,7 +19,9 @@ def load_adapters() -> None:
     global _LOADED
     if _LOADED:
         return
-    for name in ("openai", "anthropic", "gemini", "tripo"):
+    # "byteplus" module registers three route vendor segments on import
+    # (byteplus / byteplus-seedance2 / seedance).
+    for name in ("openai", "anthropic", "gemini", "tripo", "byteplus"):
         try:
             importlib.import_module(f"app.adapters.{name}")
         except ModuleNotFoundError as e:

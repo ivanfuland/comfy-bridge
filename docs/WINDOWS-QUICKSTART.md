@@ -1,6 +1,6 @@
 # Windows 快速上手（从 0 到能用）
 
-ComfyUI + comfy-bridge 在 Windows 上的傻瓜安装。让 ComfyUI 网页里的 OpenAI/Anthropic/Gemini/Tripo 节点走你自己的 LLM 网关，**不扣 comfy.org 积分**，菜单只留你支持的节点。
+ComfyUI + comfy-bridge 在 Windows 上的傻瓜安装。让 ComfyUI 网页里的 OpenAI/Anthropic/Gemini/Tripo/ByteDance·Seedance 节点走你自己的 LLM 网关，**不扣 comfy.org 积分**，菜单只留你支持的节点。
 
 > 详细原理 / 踩坑见 Obsidian 笔记《comfy-bridge Windows 迁移实战》。本页只讲「怎么装、怎么用」。
 
@@ -16,7 +16,7 @@ ComfyUI + comfy-bridge 在 Windows 上的傻瓜安装。让 ComfyUI 网页里的
 | **私有 repo 访问** | `gh auth login` 或配好 git 凭据（comfy-bridge 是私有 repo） |
 | **Windows 开发者模式** | 设置 → 隐私和安全性 → 开发者选项 → 开（用于 symlink；没开会自动退化成复制，可用但升级要手动重拷） |
 | **~10GB 磁盘** | torch / ComfyUI 大件 |
-| **LLM 网关 base URL + key** | 一把 key、四协议通用的自建网关（如 one-api / new-api），或各厂商原厂 key |
+| **LLM 网关 base URL + key** | 一把 key、多协议通用的自建网关（如 one-api / new-api，含 OpenAI/Anthropic/Gemini/Tripo/ByteDance·Seedance），或各厂商原厂 key |
 
 ---
 
@@ -92,6 +92,7 @@ powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\doctor.ps1
 | 节点报 424 `未配置` | `.env` 里对应厂商的 KEY 空。填上，重启 bridge |
 | 菜单还显示全部/灰显没生效 | 看 §4：硬隐藏要重启 ComfyUI，灰显/JS 要硬刷新 |
 | Tripo 报 `data.status` 校验失败 | 已由 bridge 自动修复；确认 bridge 是最新版（`git pull`） |
+| 字节跳动/Seedance 节点不出现或灰显 | `BRIDGE_ALLOWED_VENDORS` 要含 **`bytedance`**（不是 `byteplus`，门控 vendor 名由节点模块推导）；改后**重启 ComfyUI**。2.0 那几个节点显示英文名是前端中文翻译没覆盖到，正常 |
 | 改了 .env 没生效 | 多半没重启 bridge，或重启没成功。**双击 `windows\start-bridge.bat`**（正确重启重载），看末尾打印 `gating=True` |
 | 节点报 401 / 弹「需要登录」 | 网关 key 失效（前端把上游 401 当未登录）。换有效 key 进 `.env`，双击 `start-bridge.bat`；`logs\bridge.log` 的 `← 401` 行有详情 |
 | 看着像「一直挂掉重启」/ 任务管理器两个 python | **多半是误会**：一个 bridge = 两个 `python.exe`（uv 跳板 + 子进程）属正常。真挂掉看 `doctor.ps1` / `:8190` owner 是否稳定 |

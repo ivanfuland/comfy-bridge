@@ -19,18 +19,24 @@ _PROVIDER_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "tripo": "TRIPO_API_KEY",
+    # ByteDance/Seedance: the adapter registers three route vendor segments
+    # (byteplus / byteplus-seedance2 / seedance) but they all share one gateway
+    # base/key — resolved under the single provider name "byteplus".
+    "byteplus": "BYTEPLUS_API_KEY",
 }
 _PROVIDER_BASE = {
     "openai": "OPENAI_BASE_URL",
     "anthropic": "ANTHROPIC_BASE_URL",
     "gemini": "GEMINI_BASE_URL",
     "tripo": "TRIPO_BASE_URL",
+    "byteplus": "BYTEPLUS_BASE_URL",
 }
 _PROVIDER_DEFAULT_BASE = {
     "openai": "https://api.openai.com",
     "anthropic": "https://api.anthropic.com",
     "gemini": "https://generativelanguage.googleapis.com",
     "tripo": "https://api.tripo3d.ai",
+    "byteplus": "https://ai.leihuo.netease.com",
 }
 
 # ── Gating allowlist defaults (policy baseline; override per-deployment via .env) ──
@@ -38,7 +44,7 @@ _PROVIDER_DEFAULT_BASE = {
 # an allowed vendor (others of an allowed vendor are greyed "未适配" in the menu).
 # Override with BRIDGE_ALLOWED_VENDORS / BRIDGE_ALLOWED_NODE_CLASSES (comma-separated) in
 # .env — keeps node enable/disable out of code (no git-pull conflicts).
-DEFAULT_ALLOWED_VENDORS = ["openai", "anthropic", "gemini", "tripo"]
+DEFAULT_ALLOWED_VENDORS = ["openai", "anthropic", "gemini", "tripo", "bytedance"]
 # Per-class hard hide (denylist): classes of an ALLOWED vendor that should be removed
 # from the menu entirely (like a hidden vendor), not just greyed "未适配". Use for nodes
 # the gateway can't serve at all (e.g. dall-e on a gateway with only gpt-image). Empty by
@@ -63,6 +69,24 @@ DEFAULT_ALLOWED_NODE_CLASSES = [
     # enabled via .env override per-deployment, not baked into this baseline)
     "TripoImageToModelNode",
     "TripoMultiviewToModelNode",
+    # ByteDance/Seedance — 10 generation nodes served via the byteplus adapter.
+    # NB: gating derives this vendor as "bytedance" (from python_module
+    # nodes_bytedance), distinct from the route vendor segments byteplus/
+    # byteplus-seedance2/seedance the adapter actually registers.
+    "ByteDanceImageNode",
+    "ByteDanceSeedreamNode",
+    "ByteDanceSeedreamNodeV2",
+    "ByteDanceTextToVideoNode",
+    "ByteDanceImageToVideoNode",
+    "ByteDanceFirstLastFrameNode",
+    "ByteDanceImageReferenceNode",
+    "ByteDance2TextToVideoNode",
+    "ByteDance2FirstLastFrameNode",
+    "ByteDance2ReferenceNode",
+    # Asset-helper nodes (not is_api_node): enabled so the optional
+    # /proxy/seedance/assets + visual-validate shims are reachable end-to-end.
+    "ByteDanceCreateImageAsset",
+    "ByteDanceCreateVideoAsset",
 ]
 
 
