@@ -1,0 +1,18 @@
+[Unit]
+Description=comfy-bridge (FastAPI proxy for ComfyUI api_nodes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %h expands to the user's home dir. Assumes repo lives at ~/projects/comfyui/comfy-bridge
+# Override via systemd drop-in (~/.config/systemd/user/comfy-bridge.service.d/override.conf)
+# if your install path differs.
+WorkingDirectory=%h/projects/comfyui/comfy-bridge
+EnvironmentFile=%h/projects/comfyui/comfy-bridge/.env
+ExecStart=%h/projects/comfyui/comfy-bridge/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8190
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
