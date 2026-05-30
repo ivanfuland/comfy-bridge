@@ -214,6 +214,29 @@ uv venv --python 3.12 .venv
 
 ---
 
+## 打包分发（standalone exe，给没装 Python 的机器）
+
+把 bridge 打成单文件 exe，分发给**没有 Python 环境**的机器/同事：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\build-exe.ps1
+```
+
+产出 `dist\comfy-bridge-dist\`（已 gitignore）：
+
+| 文件 | 用途 |
+|---|---|
+| `comfy-bridge.exe` | bridge 服务本体（~18MB，不含 torch，目标机零 Python）|
+| `.env.example` | 复制为 `.env` 填网关 URL + key |
+| `comfy-bridge-gating/` | 拷进目标机 `ComfyUI\custom_nodes\`（**仍是 .py**，在 ComfyUI 的 Python 里跑）|
+| `README-fenfa.txt` | 三步用法 |
+
+> **范围**：exe 只冻结 bridge 服务进程。门控 custom_node 必须保持 .py（它在 ComfyUI 解释器里加载）；ComfyUI 本身仍需自带 Python+torch。目标机启动 ComfyUI 仍要带 `--comfy-api-base=http://127.0.0.1:8190`。
+> **取舍**：exe 是冻结产物，`git pull` 升级对它无效——改了代码要重新 `build-exe.ps1`。本机日常用源码 + 隐藏服务即可，exe 主要用于分发。
+> 打包细节见 `comfy-bridge.spec`（动态 importlib 加载的 `app.adapters.*` 与 uvicorn 协议模块靠 `collect_submodules` 收全，否则 exe 会 424「adapter not registered」）。
+
+---
+
 ## 项目结构
 
 ```
@@ -238,7 +261,11 @@ comfy-bridge/
 │   ├── start-bridge.ps1      #   服务启动器（任务经 run-hidden.vbs 调用）
 │   ├── run-hidden.vbs        #   无窗口启动器（隐藏服务）
 │   ├── healthcheck-bridge.ps1#   看门狗健康检查
-│   └── *-task-scheduler.ps1  #   注册 / 卸载自启 + 看门狗
+│   ├── *-task-scheduler.ps1  #   注册 / 卸载自启 + 看门狗
+│   ├── build-exe.ps1         #   打包 standalone exe + 组装分发包
+│   └── dist-README.txt       #   分发包用法（build-exe 拷进 dist）
+├── serve.py                  # 服务入口（python serve.py / PyInstaller 入口）
+├── comfy-bridge.spec         # PyInstaller 打包配置
 ├── systemd/comfy-bridge.service
 ├── tests/                    # pytest（60）
 ├── docs/WINDOWS-QUICKSTART.md

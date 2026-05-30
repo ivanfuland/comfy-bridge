@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 asset-cache/
 logs/
+# PyInstaller build artifacts (windows/build-exe.ps1)
+build/
+dist/

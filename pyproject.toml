@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "respx"]
+build = ["pyinstaller>=6"]   # standalone exe packaging (windows/build-exe.ps1)
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
