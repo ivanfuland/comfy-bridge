@@ -209,7 +209,7 @@ powershell -ExecutionPolicy Bypass -File windows\doctor.ps1
 ```bash
 uv venv --python 3.12 .venv
 .venv/Scripts/python -m pip install -e ".[dev]"   # Windows；Linux 用 .venv/bin/python
-.venv/Scripts/python -m pytest tests -q           # 64 passed
+.venv/Scripts/python -m pytest tests -q           # 65 passed
 ```
 
 测试用 `BRIDGE_SKIP_DOTENV=1`（conftest）隔离，不读真实 `.env`。
