@@ -211,7 +211,9 @@ def _reshape_video_create(body: dict) -> dict:
     # silently DROPPED by the gateway (-> it falls back to text2video with the wrong
     # character — verified live 2026-05-30). The four image scenarios are mutually
     # exclusive (Volcano: 含图像的 3 种场景互斥), so pick the one that's populated; order
-    # matters for first+last (first, then last).
+    # matters for first+last (first, then last). If a node ever violates exclusivity and
+    # sends multiple roles, precedence is first_frame > last_frame > reference_images >
+    # image_url (the gateway would drop the extras anyway; we pick deterministically).
     images: list[str] = []
     if first_frame:
         images = [first_frame] + ([last_frame] if last_frame else [])
@@ -289,6 +291,21 @@ def _outer_error(data: dict) -> dict:
     }
 
 
+def _synthesize_status(data: dict, task_id: str, status: str, *, content, error=None) -> dict:
+    """Build one Ark TaskStatusResponse from the outer envelope. Shared by the
+    terminal-failure and fallback branches so they can't drift (id/model/error population
+    used to differ). Surfaces the model from properties.origin_model_name when present."""
+    result: dict = {
+        "id": data.get("task_id") or task_id,
+        "model": (data.get("properties") or {}).get("origin_model_name") or "",
+        "status": status,
+        "content": content,
+    }
+    if error:
+        result["error"] = error if isinstance(error, dict) else {"code": "error", "message": str(error)}
+    return result
+
+
 def _reshape_poll(payload, task_id: str) -> dict:
     """Gateway poll envelope -> Ark TaskStatusResponse. A terminal-failure outer status
     wins over a stale inner block; otherwise prefer the inner data.data block (already
@@ -306,13 +323,9 @@ def _reshape_poll(payload, task_id: str) -> dict:
     # "running" forever and hang the poll loop. Use the outer fail_reason as the error.
     outer_status = str(data.get("status", "")).upper()
     if _OUTER_STATUS_MAP.get(outer_status) in _OUTER_FAILURE_STATES:
-        return {
-            "id": data.get("task_id") or task_id,
-            "model": (data.get("properties") or {}).get("origin_model_name") or "",
-            "status": _OUTER_STATUS_MAP[outer_status],
-            "content": None,
-            "error": _outer_error(data),
-        }
+        return _synthesize_status(
+            data, task_id, _OUTER_STATUS_MAP[outer_status], content=None, error=_outer_error(data)
+        )
 
     inner = data.get("data")
     if isinstance(inner, dict) and inner.get("status"):
@@ -338,15 +351,7 @@ def _reshape_poll(payload, task_id: str) -> dict:
                 "code": "comfy_bridge_no_video_url",
                 "message": "gateway reported success but returned no video_url/result_url",
             }
-    result: dict = {
-        "id": data.get("task_id") or task_id,
-        "model": "",
-        "status": mapped,
-        "content": content,
-    }
-    if err:
-        result["error"] = err if isinstance(err, dict) else {"code": "error", "message": str(err)}
-    return result
+    return _synthesize_status(data, task_id, mapped, content=content, error=err)
 
 
 def _normalize_image_response(payload, req_model: str) -> dict:
