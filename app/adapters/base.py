@@ -109,13 +109,35 @@ def http_client() -> httpx.AsyncClient:
 
     Attaches request/response event hooks that log every upstream call's input/output
     body to bridge.log (truncated, base64 collapsed, headers excluded). Disable with
-    BRIDGE_LOG_IO=off."""
+    BRIDGE_LOG_IO=off.
+
+    Read timeout (BRIDGE_HTTP_TIMEOUT, seconds, default 300) covers SYNCHRONOUS upstream
+    calls that block until the result is ready — e.g. OpenAI gpt-image-2 image generation,
+    which can take minutes. (Async video tasks create+poll instead, so they don't hold a
+    request open this long.) Connect timeout stays short to fail fast on an unreachable gateway."""
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
         hooks = {}
         if os.getenv("BRIDGE_LOG_IO", "on").strip().lower() != "off":
             hooks = {"request": [_log_request], "response": [_log_response]}
-        _HTTP_CLIENT = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0), event_hooks=hooks)
+        try:
+            read_timeout = float(os.getenv("BRIDGE_HTTP_TIMEOUT", "300").strip() or "300")
+        except ValueError:
+            read_timeout = 300.0
+        # Bypass the ambient system proxy (HTTP(S)_PROXY env, e.g. a VPN/Clash on 127.0.0.1)
+        # for the gateway hosts listed in BRIDGE_NO_PROXY. The bridge talks to user-configured
+        # gateways; routing a (especially domestic) gateway through a VPN proxy can stall long
+        # SYNCHRONOUS calls — gpt-image-2 image gen holds the connection for minutes and the
+        # proxy kills it -> ReadTimeout. httpx honors NO_PROXY (trust_env on by default), so
+        # merge our hosts into it. Comma-separated, e.g. BRIDGE_NO_PROXY=ai.leihuo.netease.com
+        extra_no_proxy = os.getenv("BRIDGE_NO_PROXY", "").strip()
+        if extra_no_proxy:
+            for _var in ("NO_PROXY", "no_proxy"):
+                _cur = os.environ.get(_var, "").strip()
+                os.environ[_var] = ",".join(p for p in (_cur, extra_no_proxy) if p)
+        _HTTP_CLIENT = httpx.AsyncClient(
+            timeout=httpx.Timeout(read_timeout, connect=10.0), event_hooks=hooks
+        )
     return _HTTP_CLIENT
 
 
