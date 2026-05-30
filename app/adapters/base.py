@@ -104,6 +104,23 @@ async def _log_response(response: httpx.Response) -> None:
         pass
 
 
+def _no_proxy_mounts() -> dict | None:
+    """Per-client httpx mounts that route the BRIDGE_NO_PROXY hosts DIRECT, bypassing the
+    ambient system proxy (HTTP(S)_PROXY env, e.g. a VPN/Clash on 127.0.0.1). Scoped to this
+    client only — no os.environ mutation, no cross-library bleed, no cumulative append.
+    Returns None when unset (plain client; the user's normal env proxy applies as-is).
+
+    Why: the bridge talks to user-configured gateways; routing a (esp. domestic) gateway
+    through a VPN proxy stalls long SYNCHRONOUS calls — gpt-image-2 holds the connection for
+    minutes and the proxy kills it -> ReadTimeout. httpx still honors the user's normal
+    HTTP_PROXY/NO_PROXY (trust_env default on); these mounts only override the listed hosts.
+    Comma-separated, e.g. BRIDGE_NO_PROXY=ai.leihuo.netease.com."""
+    hosts = {h.strip() for h in os.getenv("BRIDGE_NO_PROXY", "").split(",") if h.strip()}
+    if not hosts:
+        return None
+    return {f"all://{h}": httpx.AsyncHTTPTransport(proxy=None) for h in hosts}
+
+
 def http_client() -> httpx.AsyncClient:
     """Process-shared httpx.AsyncClient. Lazy-init; lifecycle tied to process.
 
@@ -124,19 +141,12 @@ def http_client() -> httpx.AsyncClient:
             read_timeout = float(os.getenv("BRIDGE_HTTP_TIMEOUT", "300").strip() or "300")
         except ValueError:
             read_timeout = 300.0
-        # Bypass the ambient system proxy (HTTP(S)_PROXY env, e.g. a VPN/Clash on 127.0.0.1)
-        # for the gateway hosts listed in BRIDGE_NO_PROXY. The bridge talks to user-configured
-        # gateways; routing a (especially domestic) gateway through a VPN proxy can stall long
-        # SYNCHRONOUS calls — gpt-image-2 image gen holds the connection for minutes and the
-        # proxy kills it -> ReadTimeout. httpx honors NO_PROXY (trust_env on by default), so
-        # merge our hosts into it. Comma-separated, e.g. BRIDGE_NO_PROXY=ai.leihuo.netease.com
-        extra_no_proxy = os.getenv("BRIDGE_NO_PROXY", "").strip()
-        if extra_no_proxy:
-            for _var in ("NO_PROXY", "no_proxy"):
-                _cur = os.environ.get(_var, "").strip()
-                os.environ[_var] = ",".join(p for p in (_cur, extra_no_proxy) if p)
+        # BRIDGE_NO_PROXY hosts bypass the ambient system proxy, scoped to this client
+        # via mounts (no os.environ mutation) — see _no_proxy_mounts().
         _HTTP_CLIENT = httpx.AsyncClient(
-            timeout=httpx.Timeout(read_timeout, connect=10.0), event_hooks=hooks
+            timeout=httpx.Timeout(read_timeout, connect=10.0),
+            event_hooks=hooks,
+            mounts=_no_proxy_mounts(),
         )
     return _HTTP_CLIENT
 
