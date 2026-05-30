@@ -30,13 +30,26 @@ def _model_from_path(path: str) -> str:
     return p.rsplit("/", 1)[-1]
 
 
+def _part_has_data(part: dict) -> bool:
+    """True if a Gemini part carries a usable data oneof (text/inlineData/fileData)."""
+    if not isinstance(part, dict):
+        return False
+    if part.get("inlineData") or part.get("fileData"):
+        return True
+    text = part.get("text")
+    return isinstance(text, str) and text.strip() != ""
+
+
 def _rewrite_body(body: dict) -> dict:
-    """Drop uploadImagesToStorage; rewrite bridge-asset fileData parts to inlineData.
-    Non-bridge fileUri (e.g. gs:// / public GCS) and non-fileData parts (text, existing
-    inlineData) are left untouched."""
+    """Drop uploadImagesToStorage; rewrite bridge-asset fileData parts to inlineData; drop
+    empty parts. Non-bridge fileUri (e.g. gs:// / public GCS) and non-fileData parts
+    (text, existing inlineData) are left untouched."""
     body.pop("uploadImagesToStorage", None)
     for content in body.get("contents", []) or []:
-        for part in content.get("parts", []) or []:
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
             if not isinstance(part, dict):
                 continue
             fd = part.get("fileData")
@@ -49,6 +62,13 @@ def _rewrite_body(body: dict) -> dict:
             mime = fd.get("mimeType") or media_type
             del part["fileData"]
             part["inlineData"] = {"mimeType": mime, "data": b64}
+        # Drop empty parts. GeminiNode always prepends a text part from the `prompt` widget;
+        # when that widget is blank (instructions live in system_prompt instead), it sends
+        # {"text": ""}, which Gemini rejects with "parts[].data: required oneof field 'data'
+        # must have one initialized field". comfy.org strips these server-side; mirror that.
+        kept = [p for p in parts if _part_has_data(p)]
+        if kept != parts:
+            content["parts"] = kept
     return body
 
 

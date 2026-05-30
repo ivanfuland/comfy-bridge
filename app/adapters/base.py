@@ -104,18 +104,50 @@ async def _log_response(response: httpx.Response) -> None:
         pass
 
 
+def _no_proxy_mounts() -> dict | None:
+    """Per-client httpx mounts that route the BRIDGE_NO_PROXY hosts DIRECT, bypassing the
+    ambient system proxy (HTTP(S)_PROXY env, e.g. a VPN/Clash on 127.0.0.1). Scoped to this
+    client only — no os.environ mutation, no cross-library bleed, no cumulative append.
+    Returns None when unset (plain client; the user's normal env proxy applies as-is).
+
+    Why: the bridge talks to user-configured gateways; routing a (esp. domestic) gateway
+    through a VPN proxy stalls long SYNCHRONOUS calls — gpt-image-2 holds the connection for
+    minutes and the proxy kills it -> ReadTimeout. httpx still honors the user's normal
+    HTTP_PROXY/NO_PROXY (trust_env default on); these mounts only override the listed hosts.
+    Comma-separated, e.g. BRIDGE_NO_PROXY=ai.leihuo.netease.com."""
+    hosts = {h.strip() for h in os.getenv("BRIDGE_NO_PROXY", "").split(",") if h.strip()}
+    if not hosts:
+        return None
+    return {f"all://{h}": httpx.AsyncHTTPTransport(proxy=None) for h in hosts}
+
+
 def http_client() -> httpx.AsyncClient:
     """Process-shared httpx.AsyncClient. Lazy-init; lifecycle tied to process.
 
     Attaches request/response event hooks that log every upstream call's input/output
     body to bridge.log (truncated, base64 collapsed, headers excluded). Disable with
-    BRIDGE_LOG_IO=off."""
+    BRIDGE_LOG_IO=off.
+
+    Read timeout (BRIDGE_HTTP_TIMEOUT, seconds, default 300) covers SYNCHRONOUS upstream
+    calls that block until the result is ready — e.g. OpenAI gpt-image-2 image generation,
+    which can take minutes. (Async video tasks create+poll instead, so they don't hold a
+    request open this long.) Connect timeout stays short to fail fast on an unreachable gateway."""
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
         hooks = {}
         if os.getenv("BRIDGE_LOG_IO", "on").strip().lower() != "off":
             hooks = {"request": [_log_request], "response": [_log_response]}
-        _HTTP_CLIENT = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0), event_hooks=hooks)
+        try:
+            read_timeout = float(os.getenv("BRIDGE_HTTP_TIMEOUT", "300").strip() or "300")
+        except ValueError:
+            read_timeout = 300.0
+        # BRIDGE_NO_PROXY hosts bypass the ambient system proxy, scoped to this client
+        # via mounts (no os.environ mutation) — see _no_proxy_mounts().
+        _HTTP_CLIENT = httpx.AsyncClient(
+            timeout=httpx.Timeout(read_timeout, connect=10.0),
+            event_hooks=hooks,
+            mounts=_no_proxy_mounts(),
+        )
     return _HTTP_CLIENT
 
 

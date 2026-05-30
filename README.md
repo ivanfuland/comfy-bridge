@@ -145,6 +145,8 @@ curl http://127.0.0.1:8190/comfy-bridge/gating
 | `BRIDGE_ALLOWED_VENDORS` | 见 `config.py` | 厂商白名单（逗号分隔，覆盖基线） |
 | `BRIDGE_ALLOWED_NODE_CLASSES` | 见 `config.py` | 类白名单；允许厂商但不在此的类灰显「未适配」 |
 | `BRIDGE_HIDDEN_NODE_CLASSES` | 空 | 类硬隐藏黑名单；从菜单彻底移除（改后需**重启 ComfyUI**） |
+| `BRIDGE_HTTP_TIMEOUT` | `300` | 上游读超时（秒）；同步出图模型（如 gpt-image-2）耗时长时调大 |
+| `BRIDGE_NO_PROXY` | 空 | 逗号分隔域名并入 `NO_PROXY`，让发往网关的请求绕过系统 HTTP(S) 代理/VPN（如 v2rayN，否则长连接被掐 ReadTimeout） |
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY` | `https://api.openai.com` / — | OpenAI 兼容网关 + key |
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` | `https://api.anthropic.com` / — | 网关须**原生支持** Anthropic 协议 |
 | `ANTHROPIC_VERSION` | `2023-06-01` | `anthropic-version` 头 |
@@ -207,7 +209,7 @@ powershell -ExecutionPolicy Bypass -File windows\doctor.ps1
 ```bash
 uv venv --python 3.12 .venv
 .venv/Scripts/python -m pip install -e ".[dev]"   # Windows；Linux 用 .venv/bin/python
-.venv/Scripts/python -m pytest tests -q           # 60 passed
+.venv/Scripts/python -m pytest tests -q           # 65 passed
 ```
 
 测试用 `BRIDGE_SKIP_DOTENV=1`（conftest）隔离，不读真实 `.env`。

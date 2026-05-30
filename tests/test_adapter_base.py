@@ -48,6 +48,23 @@ def test_resolve_unknown_asset_raises(monkeypatch, tmp_path):
         base_mod.resolve_asset_to_base64("http://127.0.0.1:8189/asset/nope")
 
 
+def test_no_proxy_mounts_scoped_no_env_mutation(monkeypatch, tmp_path):
+    """BRIDGE_NO_PROXY -> per-host httpx mounts (client-scoped), and crucially NEVER mutates
+    os.environ NO_PROXY (the old impl appended to it on every reconnect)."""
+    import os
+    monkeypatch.delenv("BRIDGE_NO_PROXY", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    _, base_mod = _mod(monkeypatch, tmp_path)
+    assert base_mod._no_proxy_mounts() is None
+    assert "NO_PROXY" not in os.environ  # unset -> nothing built, nothing mutated
+
+    monkeypatch.setenv("BRIDGE_NO_PROXY", "ai.leihuo.netease.com, example.com ,")
+    mounts = base_mod._no_proxy_mounts()
+    assert set(mounts) == {"all://ai.leihuo.netease.com", "all://example.com"}  # trims + drops blanks
+    assert "NO_PROXY" not in os.environ and "no_proxy" not in os.environ  # still no env mutation
+
+
 def test_rewrite_list_preserves_order_and_empties(monkeypatch, tmp_path):
     """multiview files[]: rewrite url elements, keep empty {} in place, preserve order."""
     assets_mod, base_mod = _mod(monkeypatch, tmp_path)
