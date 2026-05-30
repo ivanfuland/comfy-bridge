@@ -65,8 +65,16 @@ _OUTER_STATUS_MAP = {
     "SUCCESS": "succeeded",
     "SUCCEEDED": "succeeded",
     "FAILED": "failed",
+    "FAILURE": "failed",  # gateway's actual terminal-failure spelling (new-api)
+    "ERROR": "failed",
     "CANCELLED": "cancelled",
+    "CANCELED": "cancelled",
 }
+
+# Outer-envelope states that are terminal failures. On these the gateway frequently
+# leaves the inner data.data block frozen at its last status:"running" snapshot, so
+# the inner block must NOT be trusted here (doing so hangs ComfyUI's poll loop).
+_OUTER_FAILURE_STATES = {"failed", "cancelled"}
 
 
 # ── model name mapping ────────────────────────────────────────────────────────
@@ -195,14 +203,24 @@ def _reshape_video_create(body: dict) -> dict:
             prompt = f"{prompt} {suffix}".strip()
 
     out: dict = {"model": _map_video_model(model), "prompt": prompt}
-    if image_url:
-        out["image_url"] = image_url
+    # Gateway unified /v1/video/generations contract: ALL input images go in ONE top-level
+    # `images` array — 1 = first frame, 2 = first+last frame, N = reference set. The flat
+    # first_frame_image / last_frame_image / reference_images fields the nodes imply are
+    # silently DROPPED by the gateway (-> it falls back to text2video with the wrong
+    # character — verified live 2026-05-30). The four image scenarios are mutually
+    # exclusive (Volcano: 含图像的 3 种场景互斥), so pick the one that's populated; order
+    # matters for first+last (first, then last).
+    images: list[str] = []
     if first_frame:
-        out["first_frame_image"] = first_frame
-    if last_frame:
-        out["last_frame_image"] = last_frame
-    if reference_images:
-        out["reference_images"] = reference_images
+        images = [first_frame] + ([last_frame] if last_frame else [])
+    elif last_frame:
+        images = [last_frame]
+    elif reference_images:
+        images = list(reference_images)  # role:reference_image not expressible top-level; best-effort
+    elif image_url:
+        images = [image_url]
+    if images:
+        out["images"] = images
     if reference_videos:  # best-effort (gateway video-ref contract undocumented)
         out["reference_videos"] = reference_videos
     if reference_audios:
@@ -252,9 +270,23 @@ def _ensure_status_fields(inner: dict, task_id: str) -> dict:
     return out
 
 
+def _outer_error(data: dict) -> dict:
+    """Build an Ark-shaped error from a failed outer envelope. Prefer a structured
+    data.error, else synthesize from fail_reason/message so the node surfaces *why*."""
+    err = data.get("error")
+    if isinstance(err, dict) and err:
+        return err
+    reason = data.get("fail_reason") or data.get("message")
+    return {
+        "code": str(data.get("status", "failed")).lower() or "failed",
+        "message": str(reason) if reason else "task failed",
+    }
+
+
 def _reshape_poll(payload, task_id: str) -> dict:
-    """Gateway poll envelope -> Ark TaskStatusResponse. Prefer the inner data.data block
-    (already Ark-shaped); fall back to synthesizing from the outer envelope status."""
+    """Gateway poll envelope -> Ark TaskStatusResponse. A terminal-failure outer status
+    wins over a stale inner block; otherwise prefer the inner data.data block (already
+    Ark-shaped); else synthesize from the outer envelope status."""
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, dict):
         # The gateway may already hand back an Ark-shaped body directly.
@@ -262,12 +294,25 @@ def _reshape_poll(payload, task_id: str) -> dict:
             return _ensure_status_fields(payload, task_id)
         return {"id": task_id, "model": "", "status": "running", "content": None}
 
+    # Terminal failure on the outer envelope wins over a stale inner block. On a failed
+    # task the gateway often freezes data.data at status:"running" (and even sets
+    # result_url to the error string), so honoring the inner block here would report
+    # "running" forever and hang the poll loop. Use the outer fail_reason as the error.
+    outer_status = str(data.get("status", "")).upper()
+    if _OUTER_STATUS_MAP.get(outer_status) in _OUTER_FAILURE_STATES:
+        return {
+            "id": data.get("task_id") or task_id,
+            "model": (data.get("properties") or {}).get("origin_model_name") or "",
+            "status": _OUTER_STATUS_MAP[outer_status],
+            "content": None,
+            "error": _outer_error(data),
+        }
+
     inner = data.get("data")
     if isinstance(inner, dict) and inner.get("status"):
         return _ensure_status_fields(inner, task_id)
 
     # Fallback: synthesize from the outer envelope when there's no Ark-shaped inner block.
-    outer_status = str(data.get("status", "")).upper()
     mapped = _OUTER_STATUS_MAP.get(outer_status, "running")
     # Recover a downloadable url from the envelope (result_url, or a stray inner content)
     # so a 'succeeded' never carries null content — the node reads content.video_url and

@@ -101,8 +101,10 @@ def test_v1_image_to_video_base64(monkeypatch, tmp_path):
     }
     r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
     assert r.status_code == 200
-    # single image, no role -> image_url, resolved to base64 data-uri
-    assert _decode_data_uri(captured["body"]["image_url"]) == b"FRAME0"
+    # single image, no role -> images[0] (gateway unified contract), resolved to base64
+    assert _decode_data_uri(captured["body"]["images"][0]) == b"FRAME0"
+    assert len(captured["body"]["images"]) == 1
+    assert "image_url" not in captured["body"]  # flat field is silently dropped by the gateway
     assert captured["body"]["model"] == "doubao-seedance-1-0-pro-fast-251015"
 
 
@@ -127,8 +129,12 @@ def test_v1_first_last_frame_roles(monkeypatch, tmp_path):
     }
     r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
     assert r.status_code == 200
-    assert _decode_data_uri(captured["body"]["first_frame_image"]) == b"FIRST"
-    assert _decode_data_uri(captured["body"]["last_frame_image"]) == b"LAST"
+    # first+last -> images[0]=first, images[1]=last (order matters)
+    imgs = captured["body"]["images"]
+    assert _decode_data_uri(imgs[0]) == b"FIRST"
+    assert _decode_data_uri(imgs[1]) == b"LAST"
+    assert "first_frame_image" not in captured["body"]
+    assert "last_frame_image" not in captured["body"]
     assert "image_url" not in captured["body"]
 
 
@@ -153,10 +159,37 @@ def test_v1_reference_images(monkeypatch, tmp_path):
     }
     r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
     assert r.status_code == 200
-    refs = captured["body"]["reference_images"]
+    # reference set -> images[] (top-level can't carry role:reference_image; best-effort)
+    refs = captured["body"]["images"]
     assert len(refs) == 2
     assert _decode_data_uri(refs[0]) == b"REF1"
     assert _decode_data_uri(refs[1]) == b"REF2"
+    assert "reference_images" not in captured["body"]
+
+
+@respx.mock
+def test_v1_first_frame_public_url_passthrough(monkeypatch, tmp_path):
+    """Regression (2026-05-30): a first_frame image must reach the gateway in the top-level
+    `images` array. The old flat `first_frame_image` field was silently dropped by the
+    gateway -> text2video with the wrong character. Public urls pass through verbatim."""
+    captured = {}
+    respx.post(f"{LEIHUO}/v1/video/generations").mock(
+        side_effect=lambda req: captured.update(body=json.loads(req.content))
+        or httpx.Response(200, json={"id": "t"})
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    url = "https://picgo-fuland.oss-cn-beijing.aliyuncs.com/images/hero.jpg"
+    body = {
+        "model": "seedance-1-5-pro-251215",
+        "content": [
+            {"type": "text", "text": "turn head --resolution 480p"},
+            {"type": "image_url", "image_url": {"url": url}, "role": "first_frame"},
+        ],
+    }
+    r = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200
+    assert captured["body"]["images"] == [url]  # passthrough, single element = first frame
+    assert "first_frame_image" not in captured["body"]
 
 
 # ── video create: Seedance 2.0 (separate fields -> appended --params) ──
@@ -295,6 +328,78 @@ def test_poll_fallback_succeeded_without_url_is_failed(monkeypatch, tmp_path):
     assert got["error"]["code"] == "comfy_bridge_no_video_url"
 
 
+@respx.mock
+def test_poll_outer_failure_beats_stale_inner_running(monkeypatch, tmp_path):
+    """Regression: on a FAILED task the gateway leaves data.data frozen at
+    status:"running" (and sets result_url to the error string). Honoring the inner
+    block would report "running" forever and hang ComfyUI's poll loop. The outer
+    terminal failure must win, surfacing fail_reason as the error."""
+    inner = {  # stale snapshot — never updated to a terminal state
+        "id": "cgt-x",
+        "model": "doubao-seedance-2-0-fast-260128",
+        "status": "running",
+        "content": None,
+    }
+    respx.get(f"{LEIHUO}/v1/video/generations/task_z").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": "success",
+                "data": {
+                    "task_id": "task_z",
+                    "status": "FAILURE",
+                    "fail_reason": "Failed to get channel info, channel ID: 12",
+                    "result_url": "Failed to get channel info, channel ID: 12",
+                    "progress": "100%",
+                    "properties": {"origin_model_name": "doubao-seedance-2-0-fast-260128"},
+                    "data": inner,
+                },
+            },
+        )
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/task_z")
+    assert r.status_code == 200
+    got = r.json()
+    assert got["status"] == "failed"  # NOT "running"
+    assert got["id"] == "task_z"
+    assert got["content"] is None  # result_url was the error string -> not a video
+    assert "channel ID: 12" in got["error"]["message"]
+
+
+@respx.mock
+def test_poll_outer_failure_no_inner_block(monkeypatch, tmp_path):
+    """Outer FAILURE with no inner data.data block -> failed with synthesized error."""
+    respx.get(f"{LEIHUO}/v1/video/generations/t5").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": "success", "data": {"task_id": "t5", "status": "FAILURE", "fail_reason": "boom"}},
+        )
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/byteplus/api/v3/contents/generations/tasks/t5")
+    assert r.status_code == 200
+    got = r.json()
+    assert got["status"] == "failed"
+    assert got["error"]["message"] == "boom"
+
+
+@respx.mock
+def test_poll_outer_cancelled(monkeypatch, tmp_path):
+    """CANCELLED outer status maps to cancelled even with a stale running inner."""
+    inner = {"id": "t6", "status": "running", "content": None}
+    respx.get(f"{LEIHUO}/v1/video/generations/t6").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": "success", "data": {"task_id": "t6", "status": "CANCELLED", "data": inner}},
+        )
+    )
+    c, _ = _client(monkeypatch, tmp_path)
+    r = c.get("/proxy/byteplus/api/v3/contents/generations/tasks/t6")
+    assert r.status_code == 200
+    assert r.json()["status"] == "cancelled"
+
+
 # ── seedream image ──
 @respx.mock
 def test_seedream_image_base64_and_normalize(monkeypatch, tmp_path):
@@ -363,7 +468,8 @@ def test_virtual_library_shim_and_asset_resolution(monkeypatch, tmp_path):
     }
     r3 = c.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
     assert r3.status_code == 200
-    assert _decode_data_uri(captured["body"]["first_frame_image"]) == b"VLFRAME"
+    # asset://{id} -> resolved to base64, carried in the top-level images array
+    assert _decode_data_uri(captured["body"]["images"][0]) == b"VLFRAME"
 
 
 @respx.mock
