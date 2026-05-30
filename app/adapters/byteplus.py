@@ -22,7 +22,9 @@ Translation summary (spec §"翻译/Shim 设计"):
       - 1.x:  --params already inline in content[].text -> prompt verbatim
       - 2.0:  separate fields (resolution/ratio/duration/seed/watermark) -> appended as
               --params to the prompt text (the gateway only consumes inline --params)
-      - images by role -> image_url / first_frame_image / last_frame_image / reference_images[]
+      - images by role -> ONE top-level images[] array (1=first frame, 2=first+last,
+        N=reference set); the gateway silently drops flat first_frame_image/etc. NB the
+        video endpoint wants images[] (plural) but the image endpoint below wants `image`.
       - bridge asset urls (…/asset/{id}) and asset://{id} (2.0 virtual-library) are
         resolved to base64 data-URIs (the gateway cannot reach 127.0.0.1)
   • Video poll    GET …/tasks/{id}        -> GET {base}/v1/video/generations/{id}
@@ -231,7 +233,11 @@ def _reshape_video_create(body: dict) -> dict:
 def _reshape_image_create(body: dict) -> dict:
     """Seedream Ark images/generations body -> gateway body: doubao- model + ref images
     resolved to base64. Other fields (size/seed/watermark/…) pass through; the gateway
-    ignores unknown ones."""
+    ignores unknown ones.
+
+    The reference-image field here is `image` (singular) — verified 2026-05-30: `image`
+    is honored, `images` is silently dropped (-> text2img, reference ignored). This is the
+    OPPOSITE of the video endpoint, which wants images[] (plural). Don't "unify" them."""
     out = dict(body)
     out["model"] = _map_image_model(body.get("model", ""))
     img = body.get("image")
