@@ -218,8 +218,8 @@ class FalBytedanceAdapter(BaseAdapter):
                     "t2v", prompt0, params, generate_audio=gen_audio,
                 )
 
-            req_id = await _fal_client.submit(endpoint, payload)
-            task_id = _models.encode_task_id(endpoint, req_id)
+            sub = await _fal_client.submit(endpoint, payload)
+            task_id = _models.encode_task_id(sub["response_url"])
             return _json_response(
                 {"id": task_id, "model": model, "status": "queued"}
             )
@@ -323,26 +323,29 @@ class FalBytedanceAdapter(BaseAdapter):
     #    content?{video_url: STR}, error?{code, message}}
     # The ComfyUI ByteDance2 nodes read response.content.video_url (a plain string;
     # confirmed from ComfyUI apis/bytedance.py TaskStatusResult.video_url: str). Model is
-    # not known at poll time (the task_id only encodes endpoint+request_id), so it is "".
+    # not known at poll time (the task_id only encodes the fal response_url), so it is "".
     _RUNNING = {"IN_QUEUE", "IN_PROGRESS", "QUEUED", "RUNNING"}
     _FAILED = {"FAILED", "ERROR", "CANCELLED", "CANCELED"}
 
     async def _video_poll(self, task_id: str) -> Response:
         try:
-            endpoint, request_id = _models.decode_task_id(task_id)
+            response_url = _models.decode_task_id(task_id)
         except _models.BadTaskId as e:
             # A garbage id is a caller error, not a fal failure -> clear 4xx (not 500).
             return _json_response(
                 {"error": {"code": "bad_task_id", "message": str(e)}},
                 status_code=400,
             )
+        # fal's status_url is just response_url + "/status" (both use the app-id, so we
+        # use fal's RETURNED response_url verbatim — never reconstruct from the endpoint).
+        status_url = response_url + "/status"
 
         try:
-            st = await _fal_client.status(endpoint, request_id)
+            st = await _fal_client.status(status_url)
             state = str(st.get("status", "")).upper()
 
             if state == "COMPLETED":
-                res = await _fal_client.result(endpoint, request_id)
+                res = await _fal_client.result(response_url)
                 # Two-layer error check: an explicit error field OR a missing video url
                 # both mean "no usable output" -> failed. Never report succeeded with
                 # null/missing content (the node would crash on content.video_url).

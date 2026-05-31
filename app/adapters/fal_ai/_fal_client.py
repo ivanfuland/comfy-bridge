@@ -16,18 +16,22 @@ response shape was confirmed from docs, not a live generation):
     POST https://queue.fal.run/{endpoint_id}
     body = model input JSON
     -> 200 JSON includes "request_id" plus convenience URLs
-       ("status_url", "response_url", "cancel_url"). We extract request_id and
-       reconstruct the status/result URLs deterministically (below), which is
-       the documented fal-standard shape and lets callers persist just the id.
+       ("status_url", "response_url", "cancel_url"). We RETURN the full dict and
+       use fal's RETURNED status_url/response_url verbatim — we do NOT reconstruct
+       them. For multi-segment endpoints (e.g. bytedance/seedance-2.0/text-to-video)
+       fal's poll URLs use the *app-id* (the model path WITHOUT the operation
+       segment): the returned status_url is .../bytedance/seedance-2.0/requests/{id}
+       /status, NOT .../text-to-video/requests/.../status. Reconstructing from the
+       full endpoint yields 405 Method Not Allowed (LIVE-CONFIRMED 2026-05-31).
 
   Queue status:
-    GET https://queue.fal.run/{endpoint_id}/requests/{request_id}/status
+    GET {status_url}  (the status_url fal returned from submit)
     -> {"status": "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED" | ...}
        (terminal failure surfaces as a non-COMPLETED status string such as
        "FAILED"/"ERROR", or a non-2xx HTTP code.)
 
   Queue result:
-    GET https://queue.fal.run/{endpoint_id}/requests/{request_id}
+    GET {response_url}  (the response_url fal returned from submit)
     -> model output JSON (e.g. {"video": {"url": ...}} or {"images": [...]}).
 
   Storage upload (3-step REST, per the fal MCP upload_file tool contract):
@@ -44,11 +48,6 @@ response shape was confirmed from docs, not a live generation):
     so the uploaded media outlives a single generation.
 
 RESIDUAL UNCERTAINTY (flagged; honest, not fabricated):
-  * The submit response is documented to ALSO carry status_url/response_url.
-    We reconstruct those URLs from endpoint_id+request_id instead of trusting
-    the returned URLs. This is the fal-standard path shape and matches the
-    queue docs, but if fal ever shards request hosts the returned URLs would
-    be more robust. Revisit if a real submit shows a different host.
   * Whether X-Fal-Object-Lifecycle-Preference is honored on the storage
     *upload* initiate call (vs. only on queue submit) was not confirmed by a
     live upload. It is sent best-effort; if fal ignores it on uploads the file
@@ -113,8 +112,23 @@ def _check(resp: httpx.Response):
         raise FalUpstreamError(resp.status_code, _safe_body(resp))
 
 
-async def submit(endpoint_id: str, payload: dict) -> str:
-    """POST to the queue; return the request_id. Raises FalUpstreamError >=400."""
+async def _get_json(url: str) -> dict:
+    """GET a fal url and return parsed JSON. Raises FalUpstreamError >=400."""
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(url, headers=_headers())
+    _check(resp)
+    return resp.json()
+
+
+async def submit(endpoint_id: str, payload: dict) -> dict:
+    """POST to the queue; return the full response dict.
+
+    The dict carries "request_id" plus fal's convenience URLs ("status_url",
+    "response_url", "cancel_url"). Callers MUST use the returned status_url/
+    response_url for polling — they are NOT reconstructable from endpoint_id+id
+    (see module docstring: multi-segment endpoints drop the operation segment).
+    Raises FalUpstreamError >=400.
+    """
     headers = {**_headers(), "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(f"{_QUEUE_BASE}/{endpoint_id}", json=payload, headers=headers)
@@ -123,29 +137,19 @@ async def submit(endpoint_id: str, payload: dict) -> str:
     req_id = data.get("request_id")
     if not req_id:
         raise FalUpstreamError(502, {"error": "fal submit response missing request_id", "body": data})
-    return req_id
+    if not data.get("status_url") or not data.get("response_url"):
+        raise FalUpstreamError(502, {"error": "fal submit response missing status/response url", "body": data})
+    return data
 
 
-async def status(endpoint_id: str, request_id: str) -> dict:
-    """GET queue status for a request."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(
-            f"{_QUEUE_BASE}/{endpoint_id}/requests/{request_id}/status",
-            headers=_headers(),
-        )
-    _check(resp)
-    return resp.json()
+async def status(status_url: str) -> dict:
+    """GET queue status from the status_url fal returned on submit."""
+    return await _get_json(status_url)
 
 
-async def result(endpoint_id: str, request_id: str) -> dict:
-    """GET the model output for a completed request."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(
-            f"{_QUEUE_BASE}/{endpoint_id}/requests/{request_id}",
-            headers=_headers(),
-        )
-    _check(resp)
-    return resp.json()
+async def result(response_url: str) -> dict:
+    """GET the model output from the response_url fal returned on submit."""
+    return await _get_json(response_url)
 
 
 async def upload_bytes(data: bytes, content_type: str, *,
@@ -194,13 +198,15 @@ async def run_sync(endpoint_id: str, payload: dict, *,
     On exceeding max_wait -> FalUpstreamError(504, ...). max_wait is kept below
     the bridge's 300s HTTP timeout.
     """
-    request_id = await submit(endpoint_id, payload)
+    sub = await submit(endpoint_id, payload)
+    status_url = sub["status_url"]
+    response_url = sub["response_url"]
     waited = 0.0
     while True:
-        st = await status(endpoint_id, request_id)
+        st = await status(status_url)
         state = (st.get("status") or "").upper()
         if state == "COMPLETED":
-            return await result(endpoint_id, request_id)
+            return await result(response_url)
         if state in ("FAILED", "ERROR", "CANCELLED", "CANCELED"):
             raise FalUpstreamError(502, st)
         if state not in ("IN_QUEUE", "IN_PROGRESS"):

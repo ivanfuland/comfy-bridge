@@ -43,17 +43,20 @@ def test_normalize_ratio(inp, out):
 
 
 def test_task_id_roundtrip():
-    tid = M.encode_task_id("bytedance/seedance-2.0/text-to-video", "req-abc_123")
+    response_url = "https://queue.fal.run/bytedance/seedance-2.0/requests/abc"
+    tid = M.encode_task_id(response_url)
+    # urlsafe token: no '=' padding, and the raw url's '/' / '+' do not leak into the
+    # base64 alphabet (urlsafe encoding maps them to '-'/'_').
     assert "=" not in tid
     assert "/" not in tid and "+" not in tid
-    ep, rid = M.decode_task_id(tid)
-    assert ep == "bytedance/seedance-2.0/text-to-video"
-    assert rid == "req-abc_123"
+    assert M.decode_task_id(tid) == response_url
 
 
 def test_task_id_decode_failure():
     with pytest.raises(M.BadTaskId):
         M.decode_task_id("!!!not-valid!!!")
+    with pytest.raises(M.BadTaskId):
+        M.decode_task_id("!!!")
 
 
 @pytest.mark.parametrize("model,requested,capped", [

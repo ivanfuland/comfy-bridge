@@ -73,19 +73,33 @@ def clamp_max_images(model: str, requested: int) -> int:
     return min(requested, cap)
 
 
-def encode_task_id(endpoint_id: str, request_id: str) -> str:
-    raw = f"{endpoint_id}|{request_id}".encode()
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+_B64URL_RE = re.compile(r"[A-Za-z0-9_\-]+")
 
 
-def decode_task_id(task_id: str) -> tuple[str, str]:
+def encode_task_id(response_url: str) -> str:
+    """Encode fal's RETURNED response_url as the opaque task_id.
+
+    The response_url is the single source of truth for polling: the status_url is
+    just response_url + "/status". We do NOT encode endpoint_id+request_id because
+    fal's poll URLs use the app-id (model path minus the operation segment), which
+    is NOT reliably derivable from the endpoint id (see _fal_client docstring)."""
+    return base64.urlsafe_b64encode(response_url.encode()).rstrip(b"=").decode()
+
+
+def decode_task_id(task_id: str) -> str:
+    """Decode the task_id back into fal's response_url. Raises BadTaskId on garbage."""
+    # Reject non-alphabet chars up front (urlsafe_b64decode silently strips them, e.g.
+    # "!!!" -> "" instead of erroring). Only then decode + sanity-check the url.
+    if not _B64URL_RE.fullmatch(task_id):
+        raise BadTaskId(f"cannot decode task_id {task_id!r}: not urlsafe base64")
     try:
         pad = "=" * (-len(task_id) % 4)
-        raw = base64.urlsafe_b64decode(task_id + pad).decode()
-        ep, rid = raw.split("|", 1)
-        return ep, rid
+        url = base64.urlsafe_b64decode(task_id + pad).decode()
     except Exception as e:
         raise BadTaskId(f"cannot decode task_id {task_id!r}: {e}") from e
+    if not url.startswith(("http://", "https://")):
+        raise BadTaskId(f"decoded task_id is not a fal url: {url!r}")
+    return url
 
 
 _SUFFIX_RE = re.compile(r"--(\w+)\s+(\S+)")

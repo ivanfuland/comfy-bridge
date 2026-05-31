@@ -8,26 +8,39 @@ from app.adapters.fal_ai import _fal_client
 pytestmark = pytest.mark.asyncio  # pytest-asyncio asyncio_mode="auto" already configured
 
 
+# fal returns poll URLs that DROP the operation segment (app-id != full endpoint).
+# Submit to .../text-to-video, but status/response live at .../seedance-2.0/requests/...
+_APP = "https://queue.fal.run/bytedance/seedance-2.0"
+
+
 @respx.mock
-async def test_submit_returns_request_id(monkeypatch):
+async def test_submit_returns_response_dict(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
     route = respx.post("https://queue.fal.run/bytedance/seedance-2.0/text-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-123"}))
-    req_id = await _fal_client.submit("bytedance/seedance-2.0/text-to-video", {"prompt": "x"})
-    assert req_id == "req-123"
+        return_value=httpx.Response(200, json={
+            "request_id": "req-123",
+            "status_url": f"{_APP}/requests/req-123/status",
+            "response_url": f"{_APP}/requests/req-123",
+        }))
+    sub = await _fal_client.submit("bytedance/seedance-2.0/text-to-video", {"prompt": "x"})
+    assert sub["request_id"] == "req-123"
+    assert sub["response_url"] == f"{_APP}/requests/req-123"
+    assert sub["status_url"] == f"{_APP}/requests/req-123/status"
     assert route.calls[0].request.headers["authorization"] == "Key test-key"
 
 
 @respx.mock
 async def test_status_and_result(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
-    respx.get("https://queue.fal.run/bytedance/seedance-2.0/text-to-video/requests/req-1/status").mock(
+    status_url = f"{_APP}/requests/req-1/status"
+    response_url = f"{_APP}/requests/req-1"
+    respx.get(status_url).mock(
         return_value=httpx.Response(200, json={"status": "COMPLETED"}))
-    respx.get("https://queue.fal.run/bytedance/seedance-2.0/text-to-video/requests/req-1").mock(
+    respx.get(response_url).mock(
         return_value=httpx.Response(200, json={"video": {"url": "https://cdn/x.mp4"}, "seed": 1}))
-    st = await _fal_client.status("bytedance/seedance-2.0/text-to-video", "req-1")
+    st = await _fal_client.status(status_url)
     assert st["status"] == "COMPLETED"
-    res = await _fal_client.result("bytedance/seedance-2.0/text-to-video", "req-1")
+    res = await _fal_client.result(response_url)
     assert res["video"]["url"] == "https://cdn/x.mp4"
 
 
@@ -46,11 +59,23 @@ async def test_fal_http_error_wrapped(monkeypatch):
     assert ei.value.status_code == 429
 
 
+def _submit_json(req_id: str, app: str = _APP) -> dict:
+    """Realistic submit response: poll URLs use the app-id, NOT the full endpoint."""
+    return {
+        "request_id": req_id,
+        "status_url": f"{app}/requests/{req_id}/status",
+        "response_url": f"{app}/requests/{req_id}",
+    }
+
+
 @respx.mock
 async def test_run_sync_timeout_raises(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
-    respx.post(url__regex=r".*/text-to-image").mock(return_value=httpx.Response(200, json={"request_id": "req-t"}))
-    respx.get(url__regex=r".*/requests/req-t/status").mock(return_value=httpx.Response(200, json={"status": "IN_PROGRESS"}))
+    app = "https://queue.fal.run/fal-ai/bytedance/seedream/v4"
+    respx.post(url__regex=r".*/text-to-image").mock(
+        return_value=httpx.Response(200, json=_submit_json("req-t", app)))
+    respx.get(f"{app}/requests/req-t/status").mock(
+        return_value=httpx.Response(200, json={"status": "IN_PROGRESS"}))
     with pytest.raises(_fal_client.FalUpstreamError) as ei:
         await _fal_client.run_sync("fal-ai/bytedance/seedream/v4/text-to-image",
                                    {"prompt": "x"}, poll_interval=0.01, max_wait=0.03)
@@ -62,10 +87,10 @@ async def test_run_sync_completed_returns_result(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
     ep = "bytedance/seedance-2.0/text-to-video"
     respx.post(f"https://queue.fal.run/{ep}").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-ok"}))
-    respx.get(f"https://queue.fal.run/{ep}/requests/req-ok/status").mock(
+        return_value=httpx.Response(200, json=_submit_json("req-ok")))
+    respx.get(f"{_APP}/requests/req-ok/status").mock(
         return_value=httpx.Response(200, json={"status": "COMPLETED"}))
-    respx.get(f"https://queue.fal.run/{ep}/requests/req-ok").mock(
+    respx.get(f"{_APP}/requests/req-ok").mock(
         return_value=httpx.Response(200, json={"video": {"url": "https://cdn/y.mp4"}}))
     res = await _fal_client.run_sync(ep, {"prompt": "x"}, poll_interval=0.01, max_wait=1.0)
     assert res["video"]["url"] == "https://cdn/y.mp4"
@@ -76,8 +101,8 @@ async def test_run_sync_failed_raises_502(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
     ep = "bytedance/seedance-2.0/text-to-video"
     respx.post(f"https://queue.fal.run/{ep}").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-f"}))
-    respx.get(f"https://queue.fal.run/{ep}/requests/req-f/status").mock(
+        return_value=httpx.Response(200, json=_submit_json("req-f")))
+    respx.get(f"{_APP}/requests/req-f/status").mock(
         return_value=httpx.Response(200, json={"status": "FAILED", "error": "boom"}))
     with pytest.raises(_fal_client.FalUpstreamError) as ei:
         await _fal_client.run_sync(ep, {"prompt": "x"}, poll_interval=0.01, max_wait=1.0)
@@ -127,14 +152,14 @@ async def test_run_sync_polls_until_completed(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
     ep = "bytedance/seedance-2.0/text-to-video"
     respx.post(f"https://queue.fal.run/{ep}").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-multi"}))
-    respx.get(f"https://queue.fal.run/{ep}/requests/req-multi/status").mock(
+        return_value=httpx.Response(200, json=_submit_json("req-multi")))
+    respx.get(f"{_APP}/requests/req-multi/status").mock(
         side_effect=[
             httpx.Response(200, json={"status": "IN_PROGRESS"}),
             httpx.Response(200, json={"status": "IN_PROGRESS"}),
             httpx.Response(200, json={"status": "COMPLETED"}),
         ])
-    respx.get(f"https://queue.fal.run/{ep}/requests/req-multi").mock(
+    respx.get(f"{_APP}/requests/req-multi").mock(
         return_value=httpx.Response(200, json={"video": {"url": "https://cdn/z.mp4"}}))
     res = await _fal_client.run_sync(ep, {"prompt": "x"}, poll_interval=0.001, max_wait=1.0)
     assert res["video"]["url"] == "https://cdn/z.mp4"

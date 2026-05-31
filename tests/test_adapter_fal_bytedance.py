@@ -36,10 +36,24 @@ def client_no_key(monkeypatch):
     return TestClient(app)
 
 
+# fal poll URLs use the app-id (model path minus the operation segment), NOT the
+# full endpoint. Submit response carries those verbatim; the adapter encodes
+# response_url into the task_id.
+_APP = "https://queue.fal.run/bytedance/seedance-2.0"
+
+
+def _submit_json(req_id: str, app: str = _APP) -> dict:
+    return {
+        "request_id": req_id,
+        "status_url": f"{app}/requests/{req_id}/status",
+        "response_url": f"{app}/requests/{req_id}",
+    }
+
+
 @respx.mock
 def test_t2v_create_translates_to_fal_submit(client):
     sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/text-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-9"}))
+        return_value=httpx.Response(200, json=_submit_json("req-9")))
     body = {"model": "dreamina-seedance-2-0-260128",
             "content": [{"text": "a cat --resolution 720p --ratio adaptive --duration 5"}]}
     r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
@@ -50,9 +64,9 @@ def test_t2v_create_translates_to_fal_submit(client):
     assert sent["aspect_ratio"] == "auto"          # adaptive normalized
     assert sent["resolution"] == "720p"
     assert sent["duration"] == "5"
+    # the returned id decodes to fal's response_url (single source of truth for poll)
     from app.adapters.fal_ai._models import decode_task_id
-    ep, rid = decode_task_id(r.json()["id"])
-    assert ep == "bytedance/seedance-2.0/text-to-video" and rid == "req-9"
+    assert decode_task_id(r.json()["id"]) == f"{_APP}/requests/req-9"
 
 
 def test_unsupported_model_returns_424(client):
@@ -230,7 +244,8 @@ def test_resolve_to_fal_url_passes_through_public_url(client):
 @respx.mock
 def test_seedream_text_to_image_multi(client):
     respx.post("https://queue.fal.run/fal-ai/bytedance/seedream/v4.5/text-to-image").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-s"}))
+        return_value=httpx.Response(200, json=_submit_json(
+            "req-s", "https://queue.fal.run/fal-ai/bytedance/seedream/v4.5")))
     respx.get(url__regex=r".*/requests/req-s/status").mock(
         return_value=httpx.Response(200, json={"status": "COMPLETED"}))
     respx.get(url__regex=r".*/requests/req-s$").mock(
@@ -245,7 +260,8 @@ def test_seedream_text_to_image_multi(client):
 @respx.mock
 def test_seedream_t2i_payload_shape(client):
     sub = respx.post("https://queue.fal.run/fal-ai/bytedance/seedream/v4/text-to-image").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-p"}))
+        return_value=httpx.Response(200, json=_submit_json(
+            "req-p", "https://queue.fal.run/fal-ai/bytedance/seedream/v4")))
     respx.get(url__regex=r".*/requests/req-p/status").mock(
         return_value=httpx.Response(200, json={"status": "COMPLETED"}))
     respx.get(url__regex=r".*/requests/req-p$").mock(
@@ -281,7 +297,8 @@ def test_seedream_edit_endpoint_when_image_present(client):
         }))
     respx.put("https://upload.fal.run/sp-edit").mock(return_value=httpx.Response(200))
     sub = respx.post("https://queue.fal.run/fal-ai/bytedance/seedream/v5/lite/edit").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-e"}))
+        return_value=httpx.Response(200, json=_submit_json(
+            "req-e", "https://queue.fal.run/fal-ai/bytedance/seedream/v5/lite")))
     respx.get(url__regex=r".*/requests/req-e/status").mock(
         return_value=httpx.Response(200, json={"status": "COMPLETED"}))
     respx.get(url__regex=r".*/requests/req-e$").mock(
@@ -302,7 +319,8 @@ def test_seedream_size_parsed(client):
 @respx.mock
 def test_seedream_failed_maps_error(client):
     respx.post(url__regex=r".*/text-to-image").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-f"}))
+        return_value=httpx.Response(200, json=_submit_json(
+            "req-f", "https://queue.fal.run/fal-ai/bytedance/seedream/v4")))
     respx.get(url__regex=r".*/requests/req-f/status").mock(
         return_value=httpx.Response(200, json={"status": "FAILED"}))
     body = {"model": "seedream-4-0-250828", "prompt": "x", "size": "1024x1024"}
@@ -339,7 +357,7 @@ def _stub_resolve(monkeypatch):
 def test_first_last_frame_uses_image_to_video(client, monkeypatch):
     _stub_resolve(monkeypatch)
     sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/image-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-i"}))
+        return_value=httpx.Response(200, json=_submit_json("req-i")))
     body = {"model": "dreamina-seedance-2-0-260128",
             "content": [{"text": "pan --duration 5"},
                         {"type": "image_url", "image_url": {"url": "asset://first1"},
@@ -354,15 +372,14 @@ def test_first_last_frame_uses_image_to_video(client, monkeypatch):
     assert sent["prompt"].startswith("pan")
     assert sent["duration"] == "5"
     from app.adapters.fal_ai._models import decode_task_id
-    ep, rid = decode_task_id(r.json()["id"])
-    assert ep == "bytedance/seedance-2.0/image-to-video" and rid == "req-i"
+    assert decode_task_id(r.json()["id"]) == f"{_APP}/requests/req-i"
 
 
 @respx.mock
 def test_first_frame_only_image_to_video(client, monkeypatch):
     _stub_resolve(monkeypatch)
     sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/image-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-f"}))
+        return_value=httpx.Response(200, json=_submit_json("req-f")))
     body = {"model": "dreamina-seedance-2-0-260128",
             "content": [{"text": "zoom"},
                         {"type": "image_url", "image_url": {"url": "asset://only"},
@@ -378,7 +395,7 @@ def test_first_frame_only_image_to_video(client, monkeypatch):
 def test_reference_injects_ref_tokens(client, monkeypatch):
     _stub_resolve(monkeypatch)
     sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/reference-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-r"}))
+        return_value=httpx.Response(200, json=_submit_json("req-r")))
     body = {"model": "dreamina-seedance-2-0-260128",
             "content": [{"text": "two cats"},
                         {"type": "image_url", "image_url": {"url": "asset://a1"},
@@ -397,7 +414,7 @@ def test_reference_injects_ref_tokens(client, monkeypatch):
 def test_reference_with_video_and_audio(client, monkeypatch):
     _stub_resolve(monkeypatch)
     sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/reference-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-rva"}))
+        return_value=httpx.Response(200, json=_submit_json("req-rva")))
     body = {"model": "dreamina-seedance-2-0-260128",
             "content": [{"text": "scene"},
                         {"type": "image_url", "image_url": {"url": "asset://img"},
@@ -416,7 +433,8 @@ def test_reference_with_video_and_audio(client, monkeypatch):
 def test_fast_tier_image_to_video_endpoint(client, monkeypatch):
     _stub_resolve(monkeypatch)
     sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/fast/image-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-fast"}))
+        return_value=httpx.Response(200, json=_submit_json(
+            "req-fast", "https://queue.fal.run/bytedance/seedance-2.0/fast")))
     body = {"model": "dreamina-seedance-2-0-fast-260128",
             "content": [{"text": "go"},
                         {"type": "image_url", "image_url": {"url": "asset://f"},
@@ -433,7 +451,7 @@ def test_total_media_over_12_returns_424(client, monkeypatch):
     _stub_resolve(monkeypatch)
     # respx the endpoint so routing doesn't fail before the payload guard fires
     respx.post("https://queue.fal.run/bytedance/seedance-2.0/reference-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-overflow"}))
+        return_value=httpx.Response(200, json=_submit_json("req-overflow")))
     content = [{"text": "overflow test"}]
     for i in range(9):
         content.append({"type": "image_url", "image_url": {"url": f"asset://img{i}"},
@@ -457,7 +475,7 @@ def test_last_frame_only_returns_424(client, monkeypatch):
     build_video_payload('i2v', ..., image_urls=[]) → UnsupportedModel → 424."""
     _stub_resolve(monkeypatch)
     respx.post("https://queue.fal.run/bytedance/seedance-2.0/image-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-lf"}))
+        return_value=httpx.Response(200, json=_submit_json("req-lf")))
     body = {"model": "dreamina-seedance-2-0-260128",
             "content": [{"text": "last only"},
                         {"type": "image_url", "image_url": {"url": "asset://last-only"},
@@ -473,7 +491,7 @@ def test_reference_with_video_and_audio_has_ref_tokens(client, monkeypatch):
     appends @Image1, @Video1, @Audio1 to the prompt."""
     _stub_resolve(monkeypatch)
     respx.post("https://queue.fal.run/bytedance/seedance-2.0/reference-to-video").mock(
-        return_value=httpx.Response(200, json={"request_id": "req-rva2"}))
+        return_value=httpx.Response(200, json=_submit_json("req-rva2")))
     body = {"model": "dreamina-seedance-2-0-260128",
             "content": [{"text": "scene"},
                         {"type": "image_url", "image_url": {"url": "asset://img"},
@@ -497,7 +515,7 @@ def test_reference_with_video_and_audio_has_ref_tokens(client, monkeypatch):
 @respx.mock
 def test_poll_running_then_succeeded(client):
     from app.adapters.fal_ai._models import encode_task_id
-    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-9")
+    tid = encode_task_id(f"{_APP}/requests/req-9")
     respx.get(url__regex=r".*/requests/req-9/status").mock(
         side_effect=[httpx.Response(200, json={"status": "IN_PROGRESS"}),
                      httpx.Response(200, json={"status": "COMPLETED"})])
@@ -515,7 +533,7 @@ def test_poll_running_then_succeeded(client):
 @respx.mock
 def test_poll_completed_with_error_maps_failed(client):
     from app.adapters.fal_ai._models import encode_task_id
-    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-e")
+    tid = encode_task_id(f"{_APP}/requests/req-e")
     respx.get(url__regex=r".*/requests/req-e/status").mock(
         return_value=httpx.Response(200, json={"status": "COMPLETED"}))
     respx.get(url__regex=r".*/requests/req-e$").mock(
@@ -531,7 +549,7 @@ def test_poll_completed_no_video_url_maps_failed(client):
     """COMPLETED but result has neither error nor a usable video.url -> failed,
     NOT a succeeded with null content (which would crash the node on content.video_url)."""
     from app.adapters.fal_ai._models import encode_task_id
-    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-nv")
+    tid = encode_task_id(f"{_APP}/requests/req-nv")
     respx.get(url__regex=r".*/requests/req-nv/status").mock(
         return_value=httpx.Response(200, json={"status": "COMPLETED"}))
     respx.get(url__regex=r".*/requests/req-nv$").mock(
@@ -550,7 +568,7 @@ def test_poll_bad_task_id_returns_error(client):
 @respx.mock
 def test_poll_fal_http_error_maps_failed(client):
     from app.adapters.fal_ai._models import encode_task_id
-    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-h")
+    tid = encode_task_id(f"{_APP}/requests/req-h")
     respx.get(url__regex=r".*/requests/req-h/status").mock(
         return_value=httpx.Response(500, json={"error": "boom"}))
     r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
@@ -562,7 +580,7 @@ def test_poll_fal_http_error_maps_failed(client):
 def test_poll_terminal_failure_status_maps_failed(client):
     """A terminal fal status (FAILED) without ever reaching COMPLETED -> failed."""
     from app.adapters.fal_ai._models import encode_task_id
-    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-tf")
+    tid = encode_task_id(f"{_APP}/requests/req-tf")
     respx.get(url__regex=r".*/requests/req-tf/status").mock(
         return_value=httpx.Response(200, json={"status": "FAILED"}))
     r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
@@ -572,7 +590,7 @@ def test_poll_terminal_failure_status_maps_failed(client):
 @respx.mock
 def test_poll_non_json_result_maps_failed(client):
     from app.adapters.fal_ai._models import encode_task_id
-    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-nj")
+    tid = encode_task_id(f"{_APP}/requests/req-nj")
     respx.get(url__regex=r".*/requests/req-nj/status").mock(
         return_value=httpx.Response(200, json={"status": "COMPLETED"}))
     respx.get(url__regex=r".*/requests/req-nj$").mock(
