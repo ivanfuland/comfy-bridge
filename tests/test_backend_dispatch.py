@@ -73,3 +73,163 @@ def test_missing_is_ancestor_or_self(missing, target, expected):
     """spec §4.2 helper: distinguishes target/ancestor missing from internal bug."""
     from app.adapters import _missing_is_ancestor_or_self
     assert _missing_is_ancestor_or_self(missing, target) is expected
+
+
+def test_default_behavior_no_env(monkeypatch):
+    """spec §8 #1: env 全不设 → 5 个 native 注册，_REGISTRY 含 7 个 route keys."""
+    from app.adapters import load_adapters, _REGISTRY, _LOADED_BACKEND_CHOICES
+    load_adapters()
+    assert set(_REGISTRY.keys()) == {
+        "anthropic", "byteplus", "byteplus-seedance2",
+        "openai", "seedance", "tripo", "vertexai",
+    }
+    assert _LOADED_BACKEND_CHOICES == {
+        "openai": "native", "anthropic": "native", "gemini": "native",
+        "tripo": "native", "byteplus": "native",
+    }
+
+
+def test_explicit_native(monkeypatch):
+    """spec §8 #2: 显式 BYTEPLUS_BACKEND=native → 跟默认一致."""
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "native")
+    from app.adapters import load_adapters, _REGISTRY
+    load_adapters()
+    assert {"byteplus", "byteplus-seedance2", "seedance"} <= set(_REGISTRY.keys())
+
+
+def test_unknown_backend_warns_and_skips(monkeypatch, caplog):
+    """spec §8 #3: BYTEPLUS_BACKEND=fal-ai 但表里只有 native → warn + skip."""
+    import logging
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    with caplog.at_level(logging.WARNING, logger="comfy-bridge.adapters"):
+        from app.adapters import load_adapters, _REGISTRY
+        load_adapters()
+    assert not any(k in _REGISTRY for k in ("byteplus", "byteplus-seedance2", "seedance"))
+    assert {"openai", "anthropic", "vertexai", "tripo"} <= set(_REGISTRY.keys())
+    assert any("byteplus" in r.message and "fal-ai" in r.message for r in caplog.records)
+
+
+def test_case_insensitive_backend_value(monkeypatch):
+    """spec §8 #4: BYTEPLUS_BACKEND=Native → 走 native."""
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "Native")
+    from app.adapters import load_adapters, _REGISTRY
+    load_adapters()
+    assert "byteplus" in _REGISTRY
+
+
+def test_leaf_module_missing_required_false(monkeypatch):
+    """spec §8 #5: leaf module 不存在 + required=False → info log + skip."""
+    from app import adapters as adapters_mod
+    fake_registry = dict(adapters_mod._BACKEND_REGISTRY)
+    fake_byteplus = dict(fake_registry["byteplus"])
+    fake_byteplus["backends"] = {
+        **fake_byteplus["backends"],
+        "fal-ai": {
+            "module": "app.adapters.byteplus_does_not_exist",
+            "required": False,
+            "supported_node_classes": ["FakeNode"],
+        },
+    }
+    fake_registry["byteplus"] = fake_byteplus
+    monkeypatch.setattr(adapters_mod, "_BACKEND_REGISTRY", fake_registry)
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    adapters_mod.load_adapters()  # 不抛
+    assert "byteplus" not in adapters_mod._REGISTRY
+
+
+def test_parent_package_missing_required_false(monkeypatch):
+    """spec §8 #6 (codex v2 P1-1 核心): parent package 不存在 + required=False → skip."""
+    from app import adapters as adapters_mod
+    fake_registry = dict(adapters_mod._BACKEND_REGISTRY)
+    fake_byteplus = dict(fake_registry["byteplus"])
+    fake_byteplus["backends"] = {
+        **fake_byteplus["backends"],
+        "fal-ai": {
+            "module": "app.adapters.fal_ai.bytedance",  # fal_ai/ 包根本不存在
+            "required": False,
+            "supported_node_classes": ["FakeNode"],
+        },
+    }
+    fake_registry["byteplus"] = fake_byteplus
+    monkeypatch.setattr(adapters_mod, "_BACKEND_REGISTRY", fake_registry)
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    adapters_mod.load_adapters()  # 不抛
+    assert "byteplus" not in adapters_mod._REGISTRY
+
+
+def test_module_missing_required_true_hard_fails(monkeypatch):
+    """spec §8 #7 (codex v3 P1-3 核心): required=True + module 缺失 → 真抛."""
+    from app import adapters as adapters_mod
+    fake_registry = dict(adapters_mod._BACKEND_REGISTRY)
+    fake_byteplus = dict(fake_registry["byteplus"])
+    fake_byteplus["backends"] = {
+        "native": {
+            "module": "app.adapters.does_not_exist",
+            "required": True,
+            "supported_node_classes": ["FakeNode"],
+        },
+    }
+    fake_registry["byteplus"] = fake_byteplus
+    monkeypatch.setattr(adapters_mod, "_BACKEND_REGISTRY", fake_registry)
+    with pytest.raises(ModuleNotFoundError):
+        adapters_mod.load_adapters()
+
+
+def test_internal_typo_raises_regardless_of_required(monkeypatch, tmp_path):
+    """spec §8 #8: module 存在但内部 from app.adaptrs.base 拼错 → 真抛."""
+    fake_dir = tmp_path / "fake_pkg"
+    fake_dir.mkdir()
+    (fake_dir / "__init__.py").write_text("")
+    (fake_dir / "fake_typo_adapter.py").write_text(
+        "from app.adaptrs.base import nothing\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from app import adapters as adapters_mod
+    fake_registry = dict(adapters_mod._BACKEND_REGISTRY)
+    fake_byteplus = dict(fake_registry["byteplus"])
+    fake_byteplus["backends"] = {
+        "native": {
+            "module": "fake_pkg.fake_typo_adapter",
+            "required": False,
+            "supported_node_classes": ["FakeNode"],
+        },
+    }
+    fake_registry["byteplus"] = fake_byteplus
+    monkeypatch.setattr(adapters_mod, "_BACKEND_REGISTRY", fake_registry)
+    with pytest.raises(ModuleNotFoundError, match="app.adaptrs"):
+        adapters_mod.load_adapters()
+
+
+def test_idempotent(monkeypatch):
+    """spec §8 #9: 连续调两次，第二次直接 return（_LOADED=True 守卫）."""
+    from app.adapters import load_adapters, _REGISTRY
+    load_adapters()
+    snapshot = dict(_REGISTRY)
+    load_adapters()
+    assert dict(_REGISTRY) == snapshot
+
+
+def test_hard_fail_rolls_back_registry(monkeypatch):
+    """spec §8 #13 (codex v4 P1): hard fail 时 _REGISTRY 必须被清空."""
+    from app import adapters as adapters_mod
+    fake_registry = {
+        "openai": adapters_mod._BACKEND_REGISTRY["openai"],
+        "anthropic": adapters_mod._BACKEND_REGISTRY["anthropic"],
+        "byteplus": {
+            "python_module_segment": "bytedance",
+            "expected_route_keys": ["byteplus"],
+            "default_backend": "native",
+            "backends": {
+                "native": {
+                    "module": "app.adapters.does_not_exist_for_rollback_test",
+                    "required": True,
+                    "supported_node_classes": ["FakeNode"],
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(adapters_mod, "_BACKEND_REGISTRY", fake_registry)
+    with pytest.raises(ModuleNotFoundError):
+        adapters_mod.load_adapters()
+    assert adapters_mod._REGISTRY == {}
+    assert adapters_mod._LOADED_BACKEND_CHOICES == {}

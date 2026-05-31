@@ -136,17 +136,50 @@ _BACKEND_REGISTRY: dict[str, VendorSpec] = {
 }
 
 
-# Loader placeholder — Task 5 重写为真正实现
 def load_adapters() -> None:
-    """PLACEHOLDER: Task 5 will rewrite as env-driven dispatcher."""
+    """Import each logical vendor's selected backend module so its register()
+    runs. Idempotent. Backend chosen per vendor by env `{VENDOR}_BACKEND`
+    (fallback to VendorSpec.default_backend, typically 'native').
+
+    Behavior matrix (spec §4.2):
+      env value matches a declared backend     → load it
+      env value NOT in backends dict           → warn log + skip this vendor
+      module/ancestor missing + required=False → info log + skip
+      module/ancestor missing + required=True  → raise (hard fail)
+      module loads but internal bug            → raise (regardless of required)
+      hard fail at any vendor                  → clear _REGISTRY + re-raise"""
     global _LOADED
     if _LOADED:
         return
-    for name in ("openai", "anthropic", "gemini", "tripo", "byteplus"):
-        try:
-            importlib.import_module(f"app.adapters.{name}")
-        except ModuleNotFoundError as e:
-            if e.name == f"app.adapters.{name}":
+    try:
+        for vendor, vspec in _BACKEND_REGISTRY.items():
+            default = vspec["default_backend"]
+            choice = (os.getenv(f"{vendor.upper()}_BACKEND", default) or default).strip().lower()
+            backend_spec = vspec["backends"].get(choice)
+            if backend_spec is None:
+                _log.warning(
+                    "vendor %r: backend %r not declared in _BACKEND_REGISTRY "
+                    "(available: %s) — skipping",
+                    vendor, choice, sorted(vspec["backends"].keys()) or "[]",
+                )
                 continue
-            raise
+            module_path = backend_spec["module"]
+            try:
+                importlib.import_module(module_path)
+            except ModuleNotFoundError as e:
+                ancestor_missing = _missing_is_ancestor_or_self(e.name, module_path)
+                if ancestor_missing and not backend_spec["required"]:
+                    _log.info(
+                        "vendor %r: optional backend %r module %s not importable (%s) — skipping",
+                        vendor, choice, module_path, e.name,
+                    )
+                    continue
+                raise
+            _LOADED_BACKEND_CHOICES[vendor] = choice
+    except Exception:
+        # Hard fail before all vendors loaded → clear _REGISTRY so it doesn't
+        # carry half-populated state (codex v4 P1).
+        _REGISTRY.clear()
+        _LOADED_BACKEND_CHOICES.clear()
+        raise
     _LOADED = True
