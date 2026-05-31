@@ -21,6 +21,21 @@ def client(monkeypatch):
     return TestClient(app)
 
 
+@pytest.fixture
+def client_no_key(monkeypatch):
+    # Same as `client` but does NOT set FAL_KEY (conftest's autouse fixture already
+    # delenvs it). Exercises the missing-key -> FalConfigError -> 424 path.
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    import app.adapters as A
+    A._REGISTRY.clear(); A._LOADED_BACKEND_CHOICES.clear(); A._LOADED = False
+    for name in list(sys.modules):
+        if name.startswith("app.adapters.") and name != "app.adapters.base":
+            del sys.modules[name]
+    A.load_adapters()
+    from app.main import app
+    return TestClient(app)
+
+
 @respx.mock
 def test_t2v_create_translates_to_fal_submit(client):
     sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/text-to-video").mock(
@@ -112,14 +127,38 @@ def test_get_known_asset_returns_active(client):
     assert r.json()["asset_type"] == "Image"
 
 
-def test_assets_helper_post_also_stores(client):
-    # The optional /proxy/seedance/assets POST (asset-helper nodes) stores + returns id.
+def test_asset_management_assets_post_returns_424(client):
+    # Repurposed from Task 6's test_assets_helper_post_also_stores. Per spec §5.3 fal-ai
+    # does NOT support asset management. POST /proxy/seedance/assets is hit ONLY by the
+    # asset-management nodes (ByteDanceCreateImageAsset/CreateVideoAsset via
+    # _create_seedance_asset) — NOT by the FirstLastFrame/Reference i2v flow, which uploads
+    # via /virtual-library/assets. So it must return a clear 424, not store an asset.
     bridge_url = _seed_bridge_asset()
-    asset_id = client.post(
+    r = client.post(
         "/proxy/seedance/assets",
         json={"group_id": "g1", "url": bridge_url, "asset_type": "Image", "name": "n"},
-    ).json()["asset_id"]
-    assert client.get(f"/proxy/seedance/assets/{asset_id}").json()["status"] == "Active"
+    )
+    assert r.status_code == 424
+    assert "asset management" in json.dumps(r.json()).lower()
+
+
+def test_visual_validate_returns_424(client):
+    # visual-validate (H5 real-person auth) is hit only by the asset-management nodes'
+    # _obtain_group_id_via_h5_auth. fal-ai has no equivalent -> 424, not a 500/hang.
+    r = client.post("/proxy/seedance/visual-validate/sessions", json={})
+    assert r.status_code == 424
+    assert "asset management" in json.dumps(r.json()).lower()
+    r2 = client.get("/proxy/seedance/visual-validate/sessions/some-session-id")
+    assert r2.status_code == 424
+
+
+def test_missing_fal_key_returns_424(client_no_key):
+    # A video create with no FAL_KEY set -> _fal_client._key() raises FalConfigError ->
+    # adapter maps to 424 with FAL_KEY in the message (not a 500/hang).
+    body = {"model": "dreamina-seedance-2-0-260128", "content": [{"text": "a cat"}]}
+    r = client_no_key.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 424
+    assert "FAL_KEY" in json.dumps(r.json())
 
 
 @respx.mock

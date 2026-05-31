@@ -134,10 +134,22 @@ class FalBytedanceAdapter(BaseAdapter):
         p = path.strip("/")
         method = request.method
 
-        # ── seedance asset shim (no fal call on upload/GET; media already in the
-        #    bridge asset cache — the node uploads it via /customers/storage first) ──
-        if method == "POST" and p in ("virtual-library/assets", "assets"):
+        # ── asset-management endpoints (spec §5.3): fal-ai does NOT support Seedance
+        #    asset management. Hit ONLY by ByteDanceCreateImageAsset/CreateVideoAsset
+        #    (POST /assets via _create_seedance_asset) and their H5 real-person auth
+        #    (visual-validate/* via _obtain_group_id_via_h5_auth). The i2v/reference
+        #    (FirstLastFrame/Reference) flow does NOT use these — it uploads via
+        #    /virtual-library/assets (kept below). Return a clear 424, not a 500/hang. ──
+        if (method == "POST" and p == "assets") or p.startswith("visual-validate"):
+            return self._asset_management_unsupported(method, p)
+
+        # ── seedance virtual-library shim (no fal call on upload/GET; media already in
+        #    the bridge asset cache — the node uploads it via /customers/storage first).
+        #    This is the FirstLastFrame/Reference image-upload path; KEEP it working. ──
+        if method == "POST" and p == "virtual-library/assets":
             return self._asset_create(raw)
+        # GET assets/{id} is shared: virtual-library resolve polls it via
+        # _wait_for_asset_active. KEEP (Active for known ids, Failed for unknown).
         if method == "GET" and p.startswith("assets/"):
             return self._asset_get(p.rsplit("/", 1)[-1])
 
@@ -381,9 +393,24 @@ class FalBytedanceAdapter(BaseAdapter):
         })
 
     # ── seedance asset shim handlers ──
+    def _asset_management_unsupported(self, method: str, p: str) -> Response:
+        """spec §5.3: fal-ai has no Seedance asset-management (personal asset groups +
+        H5 real-person auth). POST /assets and visual-validate/* land here -> a clear 424
+        so the node surfaces the limitation instead of hanging/500ing. This does NOT touch
+        the i2v/reference flow, which goes through /virtual-library/assets."""
+        return _json_response(
+            {"error": {
+                "code": "unsupported_asset_management",
+                "message": ("fal-ai backend doesn't support asset management "
+                            f"({method} {p}); use the FirstLastFrame/Reference nodes "
+                            "(virtual-library) instead of CreateImageAsset/CreateVideoAsset"),
+            }},
+            status_code=424,
+        )
+
     def _asset_create(self, raw: bytes) -> Response:
-        """virtual-library/assets (and the helper /assets) upload: the node has already
-        PUT the media into the bridge asset cache and passes its bridge download_url here.
+        """virtual-library/assets upload (FirstLastFrame/Reference flow): the node has
+        already PUT the media into the bridge asset cache and passes its bridge download_url here.
         We map an asset_id -> that bridge url; the bytes are pulled on demand at resolve
         time (asset:// -> fal upload). Returns {"asset_id": ...}."""
         body = json.loads(raw) if raw else {}
