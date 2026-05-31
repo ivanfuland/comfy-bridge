@@ -20,9 +20,35 @@ gating_router = APIRouter()
 @gating_router.get("/comfy-bridge/gating")
 async def gating() -> dict:
     cfg = load_config()
+    from app.adapters import _REGISTRY, _BACKEND_REGISTRY, _LOADED_BACKEND_CHOICES
+
+    loaded_route_keys = sorted(_REGISTRY.keys())
+
+    vendor_meta = {
+        vendor: {
+            "python_module_segment": vspec["python_module_segment"],
+            "expected_route_keys": vspec["expected_route_keys"],
+        }
+        for vendor, vspec in _BACKEND_REGISTRY.items()
+    }
+
+    loaded_node_classes: set[str] = set()
+    for vendor, choice in _LOADED_BACKEND_CHOICES.items():
+        vspec = _BACKEND_REGISTRY.get(vendor)
+        if vspec is None:
+            continue
+        backend_spec = vspec["backends"].get(choice)
+        if backend_spec is not None:
+            loaded_node_classes.update(backend_spec["supported_node_classes"])
+
     return {
+        # 既有 4 字段不动
         "gating_enabled": cfg.gating_enabled,
         "allowed_vendors": cfg.allowed_vendors,
         "allowed_node_classes": cfg.allowed_node_classes,
         "hidden_node_classes": cfg.hidden_node_classes,
+        # 新增 3 字段
+        "loaded_route_keys": loaded_route_keys,
+        "vendor_meta": vendor_meta,
+        "loaded_node_classes": sorted(loaded_node_classes),
     }

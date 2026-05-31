@@ -268,3 +268,57 @@ def test_expected_route_keys_contract(monkeypatch, vendor, backend_name):
     adapters_mod.load_adapters()
     assert set(adapters_mod._REGISTRY.keys()) == set(vspec["expected_route_keys"]), (
         f"vendor {vendor!r} backend {backend_name!r}: route keys mismatch")
+
+
+def _make_app_client():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    return TestClient(app)
+
+
+def test_gating_endpoint_reflects_loaded_vendors(monkeypatch):
+    """spec §8 #10: 不存在的 backend → load_adapters skip → gating
+    返回里 loaded_route_keys 不含该 vendor 的 expected_route_keys."""
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    from app.adapters import load_adapters
+    load_adapters()
+    client = _make_app_client()
+    body = client.get("/comfy-bridge/gating").json()
+    for rk in ("byteplus", "byteplus-seedance2", "seedance"):
+        assert rk not in body["loaded_route_keys"]
+    for rk in ("openai", "anthropic", "vertexai", "tripo"):
+        assert rk in body["loaded_route_keys"]
+    assert set(body["vendor_meta"].keys()) == {"openai", "anthropic", "gemini", "tripo", "byteplus"}
+    assert body["vendor_meta"]["byteplus"]["python_module_segment"] == "bytedance"
+    assert body["vendor_meta"]["gemini"]["expected_route_keys"] == ["vertexai"]
+
+
+def test_gating_loaded_node_classes_reflects_capability(monkeypatch):
+    """spec §8 #14 (codex v6 P1-3): fal-ai backend supported_node_classes
+    不含 Seedance 1.x 4 节点 → loaded_node_classes 自动少这 4 个."""
+    from app import adapters as adapters_mod
+    fake_registry = dict(adapters_mod._BACKEND_REGISTRY)
+    fake_byteplus = dict(fake_registry["byteplus"])
+    fake_byteplus["backends"] = {
+        "native": fake_byteplus["backends"]["native"],
+        "fal-ai": {
+            "module": "app.adapters.byteplus",  # fake 用现有 module 保证 register 成功
+            "required": False,
+            "supported_node_classes": [
+                "ByteDance2TextToVideoNode", "ByteDanceSeedreamNodeV2",
+            ],  # 故意只声明 fal-ai 真实支持的 2 个
+        },
+    }
+    fake_registry["byteplus"] = fake_byteplus
+    monkeypatch.setattr(adapters_mod, "_BACKEND_REGISTRY", fake_registry)
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    adapters_mod.load_adapters()
+    body = _make_app_client().get("/comfy-bridge/gating").json()
+
+    assert "ByteDance2TextToVideoNode" in body["loaded_node_classes"]
+    assert "ByteDanceSeedreamNodeV2" in body["loaded_node_classes"]
+    for n in ("ByteDanceTextToVideoNode", "ByteDanceImageToVideoNode",
+              "ByteDanceFirstLastFrameNode", "ByteDanceImageReferenceNode"):
+        assert n not in body["loaded_node_classes"], f"{n} should NOT be loaded under fal-ai"
+    assert "OpenAIChatNode" in body["loaded_node_classes"]
+    assert "ClaudeNode" in body["loaded_node_classes"]
