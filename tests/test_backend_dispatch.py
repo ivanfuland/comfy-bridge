@@ -233,3 +233,38 @@ def test_hard_fail_rolls_back_registry(monkeypatch):
         adapters_mod.load_adapters()
     assert adapters_mod._REGISTRY == {}
     assert adapters_mod._LOADED_BACKEND_CHOICES == {}
+
+
+def _iter_vendor_backend_pairs():
+    """Generate (vendor, backend_name) tuples from _BACKEND_REGISTRY for parametrize."""
+    from app.adapters import _BACKEND_REGISTRY
+    for vendor, vspec in _BACKEND_REGISTRY.items():
+        for backend_name in vspec["backends"]:
+            yield (vendor, backend_name)
+
+
+@pytest.mark.parametrize("vendor,backend_name",
+                         list(_iter_vendor_backend_pairs()),
+                         ids=lambda x: x)
+def test_expected_route_keys_contract(monkeypatch, vendor, backend_name):
+    """spec §8 #11 (codex v3 P1-1, v4 P2): 每个声明的 backend 必须 register
+    完整 expected_route_keys 集合。隔离单 (vendor, backend) 通过 monkeypatch
+    整个 _BACKEND_REGISTRY 只剩一对。
+
+    当前 5 vendor × 1 backend = 5 sub-test。M2 加 fal-ai 后参数化自动多
+    sub-test 覆盖；漏 register 段则 fail，M2 PR 阻塞。"""
+    from app import adapters as adapters_mod
+    vspec = adapters_mod._BACKEND_REGISTRY[vendor]
+    backend_spec = vspec["backends"][backend_name]
+    isolated = {
+        vendor: {
+            **vspec,
+            "backends": {backend_name: backend_spec},
+            "default_backend": backend_name,
+        },
+    }
+    monkeypatch.setattr(adapters_mod, "_BACKEND_REGISTRY", isolated)
+    monkeypatch.setenv(f"{vendor.upper()}_BACKEND", backend_name)
+    adapters_mod.load_adapters()
+    assert set(adapters_mod._REGISTRY.keys()) == set(vspec["expected_route_keys"]), (
+        f"vendor {vendor!r} backend {backend_name!r}: route keys mismatch")
