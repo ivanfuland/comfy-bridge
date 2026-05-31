@@ -322,3 +322,32 @@ def test_gating_loaded_node_classes_reflects_capability(monkeypatch):
         assert n not in body["loaded_node_classes"], f"{n} should NOT be loaded under fal-ai"
     assert "OpenAIChatNode" in body["loaded_node_classes"]
     assert "ClaudeNode" in body["loaded_node_classes"]
+
+
+def test_whitespace_backend_value_falls_back_to_default(monkeypatch):
+    """codex P2-2: whitespace-only env value → treated as unset → default backend,
+    NOT an unknown backend that silently skips the vendor."""
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "   ")
+    from app.adapters import load_adapters, _REGISTRY, _LOADED_BACKEND_CHOICES
+    load_adapters()
+    assert {"byteplus", "byteplus-seedance2", "seedance"} <= set(_REGISTRY.keys())
+    assert _LOADED_BACKEND_CHOICES["byteplus"] == "native"
+
+
+def test_native_capability_is_full_vendor_set_no_hide_regression(monkeypatch):
+    """codex P1-1: native supported_node_classes must be the backend's FULL served
+    set so the JS capability layer is a no-op under the default backend. Tripo nodes
+    that are vendor-allowed but NOT e2e-verified (greyed [未适配]) must stay in
+    loaded_node_classes — else the JS layer hides them instead of greying (regression
+    vs the shipped 4-tier policy / the plan's own Task 11 acceptance)."""
+    from app.adapters import load_adapters
+    load_adapters()
+    body = _make_app_client().get("/comfy-bridge/gating").json()
+    loaded = set(body["loaded_node_classes"])
+    # The 6 unverified Tripo nodes (api_node=True, vendor tripo) must be present so
+    # they fall through to the grey layer rather than being capability-hidden.
+    for n in ("TripoTextToModelNode", "TripoTextureNode", "TripoRefineNode",
+              "TripoRigNode", "TripoRetargetNode", "TripoConversionNode"):
+        assert n in loaded, f"{n} must stay in loaded_node_classes (grey, not hide)"
+    # And the verified ones too.
+    assert {"TripoImageToModelNode", "TripoMultiviewToModelNode"} <= loaded

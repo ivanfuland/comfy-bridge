@@ -63,7 +63,18 @@ _NATIVE_GEMINI_NODES = [
     "GeminiNode", "GeminiImageNode", "GeminiImage2Node",
     "GeminiNanoBanana2", "GeminiNanoBanana2V2",
 ]
-_NATIVE_TRIPO_NODES = ["TripoImageToModelNode", "TripoMultiviewToModelNode"]
+# Full native capability = every api_node=True class of vendor `tripo`
+# (comfy_api_nodes.nodes_tripo). Must be the backend's full served set, NOT the
+# e2e-verified subset (that subset lives in config.DEFAULT_ALLOWED_NODE_CLASSES
+# and only controls the grey "[未适配]" layer). Keeping it the full set makes the
+# JS capability layer a no-op under the default (native) backend — preserving the
+# existing grey-not-hide behavior for unverified Tripo nodes (zero regression).
+# A narrower backend (e.g. fal-ai) declares its own smaller set to trigger hiding.
+_NATIVE_TRIPO_NODES = [
+    "TripoTextToModelNode", "TripoImageToModelNode", "TripoMultiviewToModelNode",
+    "TripoTextureNode", "TripoRefineNode", "TripoRigNode",
+    "TripoRetargetNode", "TripoConversionNode",
+]
 _NATIVE_BYTEPLUS_NODES = [
     "ByteDanceImageNode", "ByteDanceSeedreamNode", "ByteDanceSeedreamNodeV2",
     "ByteDanceTextToVideoNode", "ByteDanceImageToVideoNode",
@@ -154,7 +165,9 @@ def load_adapters() -> None:
     try:
         for vendor, vspec in _BACKEND_REGISTRY.items():
             default = vspec["default_backend"]
-            choice = (os.getenv(f"{vendor.upper()}_BACKEND", default) or default).strip().lower()
+            # Empty/whitespace-only env value falls back to default (not treated
+            # as an unknown backend that would silently skip the vendor). codex P2-2.
+            choice = (os.getenv(f"{vendor.upper()}_BACKEND") or "").strip().lower() or default
             backend_spec = vspec["backends"].get(choice)
             if backend_spec is None:
                 _log.warning(
