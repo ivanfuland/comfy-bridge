@@ -241,6 +241,12 @@ class FalBytedanceAdapter(BaseAdapter):
         except _fal_client.FalUpstreamError as e:
             body_obj = e.body if isinstance(e.body, dict) else {"detail": e.body}
             return _json_response({"error": body_obj}, status_code=e.status_code)
+        except Exception as e:
+            _log.warning("_video_create unexpected error: %r", e)
+            return _json_response(
+                {"error": {"code": "internal", "message": str(e)}},
+                status_code=502,
+            )
 
     # ── image create (Task 9): synchronous Seedream gen via fal queue+block-poll ──
     # Inbound body is the Ark Seedream4TaskCreationRequest the ComfyUI Seedream nodes
@@ -310,6 +316,12 @@ class FalBytedanceAdapter(BaseAdapter):
         except _fal_client.FalUpstreamError as e:
             err = e.body if isinstance(e.body, dict) else {"code": "fal_error", "message": str(e.body)}
             return self._image_error(body.get("model", ""), e.status_code, err)
+        except Exception as e:
+            _log.warning("_image_create unexpected error: %r", e)
+            return self._image_error(
+                body.get("model", ""), 502,
+                {"code": "internal", "message": str(e)},
+            )
 
     def _image_error(self, model: str, status_code: int, error: dict) -> Response:
         """Ark-shaped error ImageTaskCreationResponse. The node reads response.error;

@@ -114,8 +114,11 @@ def _check(resp: httpx.Response):
 
 async def _get_json(url: str) -> dict:
     """GET a fal url and return parsed JSON. Raises FalUpstreamError >=400."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.get(url, headers=_headers())
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(url, headers=_headers())
+    except httpx.HTTPError as e:
+        raise FalUpstreamError(502, {"code": "fal_transport_error", "message": str(e)}) from e
     _check(resp)
     return resp.json()
 
@@ -130,8 +133,11 @@ async def submit(endpoint_id: str, payload: dict) -> dict:
     Raises FalUpstreamError >=400.
     """
     headers = {**_headers(), "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(f"{_QUEUE_BASE}/{endpoint_id}", json=payload, headers=headers)
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(f"{_QUEUE_BASE}/{endpoint_id}", json=payload, headers=headers)
+    except httpx.HTTPError as e:
+        raise FalUpstreamError(502, {"code": "fal_transport_error", "message": str(e)}) from e
     _check(resp)
     data = resp.json()
     req_id = data.get("request_id")
@@ -170,23 +176,28 @@ async def upload_bytes(data: bytes, content_type: str, *,
             {"expiration_duration_seconds": expiry_seconds}
         ),
     }
-    async with httpx.AsyncClient(timeout=60) as client:
-        init = await client.post(
-            _UPLOAD_INITIATE,
-            json={"file_name": file_name, "content_type": content_type},
-            headers=init_headers,
-        )
-        _check(init)
-        info = init.json()
-        upload_url = info.get("upload_url")
-        file_url = info.get("file_url")
-        if not upload_url or not file_url:
-            raise FalUpstreamError(502, {"error": "fal upload initiate missing urls", "body": info})
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            init = await client.post(
+                _UPLOAD_INITIATE,
+                json={"file_name": file_name, "content_type": content_type},
+                headers=init_headers,
+            )
+            _check(init)
+            info = init.json()
+            upload_url = info.get("upload_url")
+            file_url = info.get("file_url")
+            if not upload_url or not file_url:
+                raise FalUpstreamError(502, {"error": "fal upload initiate missing urls", "body": info})
 
-        # pre-signed upload_url: NO Authorization header (signature is in the URL;
-        # adding auth would break the S3-style PUT).
-        put = await client.put(upload_url, content=data, headers={"Content-Type": content_type})
-        _check(put)
+            # pre-signed upload_url: NO Authorization header (signature is in the URL;
+            # adding auth would break the S3-style PUT).
+            put = await client.put(upload_url, content=data, headers={"Content-Type": content_type})
+            _check(put)
+    except FalUpstreamError:
+        raise
+    except httpx.HTTPError as e:
+        raise FalUpstreamError(502, {"code": "fal_transport_error", "message": str(e)}) from e
     return file_url
 
 

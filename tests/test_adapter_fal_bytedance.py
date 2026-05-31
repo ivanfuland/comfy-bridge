@@ -603,3 +603,29 @@ def test_poll_non_json_result_maps_failed(client):
     r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
     assert r.status_code == 200
     assert r.json()["status"] == "failed"
+
+
+# ── transport-error backstop: create endpoints must never return raw 500 ────────
+
+@respx.mock
+def test_video_create_transport_error_not_500(client):
+    """A transport-level error during fal submit must produce a clean >=400 (not 500)."""
+    respx.post("https://queue.fal.run/bytedance/seedance-2.0/text-to-video").mock(
+        side_effect=httpx.ConnectError("network gone"))
+    body = {"model": "dreamina-seedance-2-0-260128", "content": [{"text": "a cat"}]}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code != 500
+    assert r.status_code >= 400
+    err = r.json().get("error", {})
+    assert err  # must carry an error body, not an empty dict
+
+
+@respx.mock
+def test_image_create_transport_error_not_500(client):
+    """A transport-level error during fal run_sync (submit) must produce a clean >=400 (not 500)."""
+    respx.post(url__regex=r".*/text-to-image").mock(
+        side_effect=httpx.ConnectError("network gone"))
+    body = {"model": "seedream-4-0-250828", "prompt": "a dog", "size": "1024x1024"}
+    r = client.post("/proxy/byteplus/api/v3/images/generations", json=body)
+    assert r.status_code != 500
+    assert r.status_code >= 400

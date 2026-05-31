@@ -179,3 +179,56 @@ async def test_upload_bytes_put_failure_raises(monkeypatch):
     with pytest.raises(_fal_client.FalUpstreamError) as ei:
         await _fal_client.upload_bytes(b"\x89PNG", "image/png")
     assert ei.value.status_code == 500
+
+
+# ── transport-error wrapping tests (the core bug fix) ──────────────────────────
+
+@respx.mock
+async def test_submit_transport_error_wrapped(monkeypatch):
+    """A connection-level error during submit must raise FalUpstreamError, not raw httpx."""
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    respx.post("https://queue.fal.run/ep").mock(side_effect=httpx.ConnectError("boom"))
+    with pytest.raises(_fal_client.FalUpstreamError) as ei:
+        await _fal_client.submit("ep", {"prompt": "x"})
+    assert ei.value.status_code == 502
+    assert "fal_transport_error" in str(ei.value.body)
+
+
+@respx.mock
+async def test_get_json_transport_error_wrapped(monkeypatch):
+    """A transport-level error during GET (status/result) must be wrapped as FalUpstreamError."""
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    respx.get("https://queue.fal.run/some/requests/req-x/status").mock(
+        side_effect=httpx.RemoteProtocolError("protocol boom"))
+    with pytest.raises(_fal_client.FalUpstreamError) as ei:
+        await _fal_client.status("https://queue.fal.run/some/requests/req-x/status")
+    assert ei.value.status_code == 502
+
+
+@respx.mock
+async def test_upload_bytes_initiate_transport_error_wrapped(monkeypatch):
+    """A transport error on the upload initiate POST must raise FalUpstreamError."""
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    respx.post("https://rest.alpha.fal.ai/storage/upload/initiate").mock(
+        side_effect=httpx.ConnectError("connect failed"))
+    with pytest.raises(_fal_client.FalUpstreamError) as ei:
+        await _fal_client.upload_bytes(b"x", "image/png")
+    assert ei.value.status_code == 502
+    assert "fal_transport_error" in str(ei.value.body)
+
+
+@respx.mock
+async def test_upload_bytes_put_transport_error_wrapped(monkeypatch):
+    """A transport error on the pre-signed PUT must raise FalUpstreamError, not raw httpx."""
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    respx.post("https://rest.alpha.fal.ai/storage/upload/initiate").mock(
+        return_value=httpx.Response(200, json={
+            "upload_url": "https://upload.fal.run/put/transport-fail",
+            "file_url": "https://v3.fal.media/files/transport-fail/x.png",
+        }))
+    respx.put("https://upload.fal.run/put/transport-fail").mock(
+        side_effect=httpx.ReadError("read fail"))
+    with pytest.raises(_fal_client.FalUpstreamError) as ei:
+        await _fal_client.upload_bytes(b"x", "image/png")
+    assert ei.value.status_code == 502
+    assert "fal_transport_error" in str(ei.value.body)
