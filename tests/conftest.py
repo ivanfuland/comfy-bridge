@@ -23,6 +23,12 @@ _BRIDGE_VARS = [
     "GEMINI_BASE_URL", "GEMINI_API_KEY",
     "TRIPO_BASE_URL", "TRIPO_API_KEY",
     "BYTEPLUS_BASE_URL", "BYTEPLUS_API_KEY",
+    # Backend selection envs (added for backend dispatcher refactor)
+    "OPENAI_BACKEND",
+    "ANTHROPIC_BACKEND",
+    "GEMINI_BACKEND",
+    "TRIPO_BACKEND",
+    "BYTEPLUS_BACKEND",
 ]
 
 
