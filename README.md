@@ -153,6 +153,7 @@ curl http://127.0.0.1:8190/comfy-bridge/gating
 | `GEMINI_BASE_URL` / `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com` / — | Gemini |
 | `TRIPO_BASE_URL` / `TRIPO_API_KEY` | `https://api.tripo3d.ai` / — | Tripo |
 | `BYTEPLUS_BASE_URL` / `BYTEPLUS_API_KEY` | — | ByteDance/Seedance（Seedream 图 + Seedance 1.x/2.0 视频）；三个路由段 `byteplus`/`byteplus-seedance2`/`seedance` 共用此对 |
+| `{VENDOR}_BACKEND` | `native`（VendorSpec.default_backend） | 选 backend 实现（如 `BYTEPLUS_BACKEND=fal-ai`）。当前 5 vendor 都只 native；M2/M3 加 fal-ai |
 
 > 只填要用的厂商；缺 key 的厂商节点返回 HTTP 424「未配置」，不影响其它。base URL 填 origin-root（OpenAI 会自动去重 `/v1`，Anthropic **不要**带 `/v1`）。
 
