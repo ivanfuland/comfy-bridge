@@ -16,6 +16,23 @@ _LOADED = False
 _LOADED_BACKEND_CHOICES: dict[str, str] = {}
 
 
+def _missing_is_ancestor_or_self(missing: str | None, target: str) -> bool:
+    """True when `missing` (from ModuleNotFoundError.name) is either the target
+    module itself or any ancestor package on the path to it. Used by
+    load_adapters() to distinguish 'target/ancestor absent' (graceful when
+    required=False) from 'target loaded but its internals reference something
+    missing' (real bug — re-raise regardless of required).
+
+    Examples for target='app.adapters.fal_ai.bytedance':
+      missing='app.adapters.fal_ai.bytedance' (leaf)        → True
+      missing='app.adapters.fal_ai'           (parent)      → True
+      missing='app.adaptrs.base'              (internal)    → False
+    """
+    return missing is not None and (
+        missing == target or target.startswith(missing + ".")
+    )
+
+
 def register(name: str, adapter) -> None:
     _REGISTRY[name] = adapter
 

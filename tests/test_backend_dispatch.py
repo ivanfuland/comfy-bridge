@@ -52,3 +52,24 @@ def test_backend_registry_schema_consistency():
 
     assert len(all_route_keys) == len(set(all_route_keys)), \
         f"Cross-vendor route key collision: {all_route_keys}"
+
+
+@pytest.mark.parametrize("missing,target,expected", [
+    # 自身缺失
+    ("app.adapters.fal_ai.bytedance", "app.adapters.fal_ai.bytedance", True),
+    # 父包缺失（codex v2 P1-1 核心场景）
+    ("app.adapters.fal_ai", "app.adapters.fal_ai.bytedance", True),
+    # 更高祖先
+    ("app.adapters", "app.adapters.fal_ai.bytedance", True),
+    ("app", "app.adapters.fal_ai.bytedance", True),
+    # 内部 typo（非祖先）→ 不命中
+    ("app.adaptrs.base", "app.adapters.fal_ai.bytedance", False),
+    # 命名相似但不真是祖先
+    ("app.adapters_v2", "app.adapters.fal_ai.bytedance", False),
+    # None
+    (None, "app.adapters.fal_ai.bytedance", False),
+])
+def test_missing_is_ancestor_or_self(missing, target, expected):
+    """spec §4.2 helper: distinguishes target/ancestor missing from internal bug."""
+    from app.adapters import _missing_is_ancestor_or_self
+    assert _missing_is_ancestor_or_self(missing, target) is expected
