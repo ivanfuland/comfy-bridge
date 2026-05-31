@@ -29,6 +29,8 @@ _BRIDGE_VARS = [
     "GEMINI_BACKEND",
     "TRIPO_BACKEND",
     "BYTEPLUS_BACKEND",
+    # fal.ai credentials
+    "FAL_KEY",
 ]
 
 

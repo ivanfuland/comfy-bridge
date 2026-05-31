@@ -98,15 +98,16 @@ def test_explicit_native(monkeypatch):
 
 
 def test_unknown_backend_warns_and_skips(monkeypatch, caplog):
-    """spec §8 #3: BYTEPLUS_BACKEND=fal-ai 但表里只有 native → warn + skip."""
+    """spec §8 #3: 未声明的 backend 名称 → warn + skip。
+    (Updated in Task 2: fal-ai is now a declared backend; use a truly unknown name.)"""
     import logging
-    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "nonexistent-backend")
     with caplog.at_level(logging.WARNING, logger="comfy-bridge.adapters"):
         from app.adapters import load_adapters, _REGISTRY
         load_adapters()
     assert not any(k in _REGISTRY for k in ("byteplus", "byteplus-seedance2", "seedance"))
     assert {"openai", "anthropic", "vertexai", "tripo"} <= set(_REGISTRY.keys())
-    assert any("byteplus" in r.message and "fal-ai" in r.message for r in caplog.records)
+    assert any("byteplus" in r.message and "nonexistent-backend" in r.message for r in caplog.records)
 
 
 def test_case_insensitive_backend_value(monkeypatch):
@@ -138,21 +139,22 @@ def test_leaf_module_missing_required_false(monkeypatch):
 
 
 def test_parent_package_missing_required_false(monkeypatch):
-    """spec §8 #6 (codex v2 P1-1 核心): parent package 不存在 + required=False → skip."""
+    """spec §8 #6 (codex v2 P1-1 核心): parent package 不存在 + required=False → skip.
+    (Updated in Task 2: app.adapters.fal_ai now exists; use a non-existent parent package.)"""
     from app import adapters as adapters_mod
     fake_registry = dict(adapters_mod._BACKEND_REGISTRY)
     fake_byteplus = dict(fake_registry["byteplus"])
     fake_byteplus["backends"] = {
         **fake_byteplus["backends"],
-        "fal-ai": {
-            "module": "app.adapters.fal_ai.bytedance",  # fal_ai/ 包根本不存在
+        "ghost-backend": {
+            "module": "app.adapters.ghost_pkg.bytedance",  # ghost_pkg/ 包根本不存在
             "required": False,
             "supported_node_classes": ["FakeNode"],
         },
     }
     fake_registry["byteplus"] = fake_byteplus
     monkeypatch.setattr(adapters_mod, "_BACKEND_REGISTRY", fake_registry)
-    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "ghost-backend")
     adapters_mod.load_adapters()  # 不抛
     assert "byteplus" not in adapters_mod._REGISTRY
 
@@ -277,9 +279,10 @@ def _make_app_client():
 
 
 def test_gating_endpoint_reflects_loaded_vendors(monkeypatch):
-    """spec §8 #10: 不存在的 backend → load_adapters skip → gating
-    返回里 loaded_route_keys 不含该 vendor 的 expected_route_keys."""
-    monkeypatch.setenv("BYTEPLUS_BACKEND", "fal-ai")
+    """spec §8 #10: 未声明的 backend → load_adapters skip → gating
+    返回里 loaded_route_keys 不含该 vendor 的 expected_route_keys。
+    (Updated in Task 2: fal-ai is now declared; use nonexistent-backend instead.)"""
+    monkeypatch.setenv("BYTEPLUS_BACKEND", "nonexistent-backend")
     from app.adapters import load_adapters
     load_adapters()
     client = _make_app_client()

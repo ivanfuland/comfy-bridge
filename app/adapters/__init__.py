@@ -142,6 +142,17 @@ _BACKEND_REGISTRY: dict[str, VendorSpec] = {
                 "required": True,
                 "supported_node_classes": _NATIVE_BYTEPLUS_NODES,
             },
+            "fal-ai": {
+                "module": "app.adapters.fal_ai.bytedance",
+                "required": False,
+                "supported_node_classes": [
+                    "ByteDance2TextToVideoNode",
+                    "ByteDance2FirstLastFrameNode",
+                    "ByteDance2ReferenceNode",
+                    "ByteDanceSeedreamNode",
+                    "ByteDanceSeedreamNodeV2",
+                ],
+            },
         },
     },
 }
