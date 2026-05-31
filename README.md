@@ -153,7 +153,8 @@ curl http://127.0.0.1:8190/comfy-bridge/gating
 | `GEMINI_BASE_URL` / `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com` / — | Gemini |
 | `TRIPO_BASE_URL` / `TRIPO_API_KEY` | `https://api.tripo3d.ai` / — | Tripo |
 | `BYTEPLUS_BASE_URL` / `BYTEPLUS_API_KEY` | — | ByteDance/Seedance（Seedream 图 + Seedance 1.x/2.0 视频）；三个路由段 `byteplus`/`byteplus-seedance2`/`seedance` 共用此对 |
-| `{VENDOR}_BACKEND` | `native`（VendorSpec.default_backend） | 选 backend 实现（如 `BYTEPLUS_BACKEND=fal-ai`）。当前 5 vendor 都只 native；M2/M3 加 fal-ai |
+| `FAL_KEY` | — | fal.ai API key；仅 `BYTEPLUS_BACKEND=fal-ai` 时使用 |
+| `{VENDOR}_BACKEND` | `native` | 选 backend 实现。`BYTEPLUS_BACKEND=fal-ai`（Linux）将 ByteDance 节点路由至 fal.ai；不设则走原生 doubao 网关（Windows，行为不变）。fal-ai 下支持：Seedance 2.0（TextToVideo / FirstLastFrame / Reference）+ Seedream（4.0/4.5/5.0-lite）；Seedance 1.x 通过能力门控隐藏（可配 `BRIDGE_HIDDEN_NODE_CLASSES` 补充），`ByteDanceImageNode`（seedream-3-0）与资产管理节点（CreateImageAsset / CreateVideoAsset）不支持（后者返回明确 424）。 |
 
 > 只填要用的厂商；缺 key 的厂商节点返回 HTTP 424「未配置」，不影响其它。base URL 填 origin-root（OpenAI 会自动去重 `/v1`，Anthropic **不要**带 `/v1`）。
 
