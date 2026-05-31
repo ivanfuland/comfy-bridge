@@ -144,7 +144,10 @@ class FalBytedanceAdapter(BaseAdapter):
         # Video CREATE: POST .../contents/generations/tasks
         if method == "POST" and p.endswith("contents/generations/tasks"):
             return await self._video_create(raw)
-        # Skeleton: poll / image / i2v / reference land in later tasks.
+        # Video POLL: GET .../contents/generations/tasks/{task_id}
+        if method == "GET" and "contents/generations/tasks/" in p:
+            return await self._video_poll(p.rsplit("/", 1)[-1])
+        # Skeleton: image / further branches land in later tasks.
         return _json_response(
             {"error": {"code": "not_implemented",
                        "message": f"fal-ai byteplus: no handler yet for {request.method} {path}"}},
@@ -219,6 +222,81 @@ class FalBytedanceAdapter(BaseAdapter):
         except _fal_client.FalUpstreamError as e:
             body_obj = e.body if isinstance(e.body, dict) else {"detail": e.body}
             return _json_response({"error": body_obj}, status_code=e.status_code)
+
+    # ── video poll (Task 8): fal queue status/result -> byteplus TaskStatusResponse ──
+    # Output shape mirrors native byteplus._reshape_poll (NOT imported, §2 zero-diff):
+    #   {id, model, status in queued|running|cancelled|succeeded|failed,
+    #    content?{video_url: STR}, error?{code, message}}
+    # The ComfyUI ByteDance2 nodes read response.content.video_url (a plain string;
+    # confirmed from ComfyUI apis/bytedance.py TaskStatusResult.video_url: str). Model is
+    # not known at poll time (the task_id only encodes endpoint+request_id), so it is "".
+    _RUNNING = {"IN_QUEUE", "IN_PROGRESS", "QUEUED", "RUNNING"}
+    _FAILED = {"FAILED", "ERROR", "CANCELLED", "CANCELED"}
+
+    async def _video_poll(self, task_id: str) -> Response:
+        try:
+            endpoint, request_id = _models.decode_task_id(task_id)
+        except _models.BadTaskId as e:
+            # A garbage id is a caller error, not a fal failure -> clear 4xx (not 500).
+            return _json_response(
+                {"error": {"code": "bad_task_id", "message": str(e)}},
+                status_code=400,
+            )
+
+        try:
+            st = await _fal_client.status(endpoint, request_id)
+            state = str(st.get("status", "")).upper()
+
+            if state == "COMPLETED":
+                res = await _fal_client.result(endpoint, request_id)
+                # Two-layer error check: an explicit error field OR a missing video url
+                # both mean "no usable output" -> failed. Never report succeeded with
+                # null/missing content (the node would crash on content.video_url).
+                err = res.get("error") if isinstance(res, dict) else None
+                video_url = None
+                if isinstance(res, dict):
+                    video = res.get("video")
+                    if isinstance(video, dict):
+                        video_url = video.get("url")
+                if err or not video_url:
+                    return self._poll_failed(task_id, err)
+                return _json_response({
+                    "id": task_id, "model": "", "status": "succeeded",
+                    "content": {"video_url": video_url},
+                })
+
+            if state in self._FAILED:
+                return self._poll_failed(task_id, st.get("error") or st.get("status"))
+
+            # IN_QUEUE / IN_PROGRESS — and any unrecognized non-terminal status — keep
+            # the node polling (running) rather than ending the poll loop prematurely.
+            return _json_response(
+                {"id": task_id, "model": "", "status": "running", "content": None}
+            )
+        except _fal_client.FalUpstreamError as e:
+            # A status/result HTTP error must not pass through as a raw 5xx: the node
+            # polls and expects a status document. Map to a failed poll status doc.
+            return self._poll_failed(task_id, e.body)
+        except Exception as e:
+            # Last-resort guard: any unexpected error (e.g. JSONDecodeError from a
+            # non-JSON fal response) must not propagate as a 500. A poll endpoint
+            # must always return a status doc the node can read.
+            _log.warning("_video_poll unexpected error for %s: %r", task_id, e)
+            return self._poll_failed(task_id, str(e))
+
+    def _poll_failed(self, task_id: str, error=None) -> Response:
+        """Build a failed TaskStatusResponse with content=None and a surfaced error
+        (so the node reports *why* instead of looping or crashing)."""
+        if isinstance(error, dict):
+            err = error
+        elif error:
+            err = {"code": "failed", "message": str(error)}
+        else:
+            err = {"code": "failed", "message": "task failed"}
+        return _json_response({
+            "id": task_id, "model": "", "status": "failed",
+            "content": None, "error": err,
+        })
 
     # ── seedance asset shim handlers ──
     def _asset_create(self, raw: bytes) -> Response:

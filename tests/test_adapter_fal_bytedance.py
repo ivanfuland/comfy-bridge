@@ -351,3 +351,97 @@ def test_reference_with_video_and_audio_has_ref_tokens(client, monkeypatch):
     assert "@Image1" in sent["prompt"]
     assert "@Video1" in sent["prompt"]
     assert "@Audio1" in sent["prompt"]
+
+
+# ── Task 8: video poll (status mapping + two-layer error detection) ──
+# Inbound: GET /proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{task_id}.
+# Output must match native byteplus._reshape_poll's TaskStatusResponse shape:
+# {id, model, status in queued|running|cancelled|succeeded|failed, content?{video_url: STR}}
+# The node reads response.content.video_url (a plain string — confirmed from
+# ComfyUI apis/bytedance.py TaskStatusResult.video_url: str).
+@respx.mock
+def test_poll_running_then_succeeded(client):
+    from app.adapters.fal_ai._models import encode_task_id
+    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-9")
+    respx.get(url__regex=r".*/requests/req-9/status").mock(
+        side_effect=[httpx.Response(200, json={"status": "IN_PROGRESS"}),
+                     httpx.Response(200, json={"status": "COMPLETED"})])
+    respx.get(url__regex=r".*/requests/req-9$").mock(
+        return_value=httpx.Response(200, json={"video": {"url": "https://cdn/x.mp4"}}))
+    r1 = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
+    assert r1.json()["status"] == "running"
+    r2 = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
+    assert r2.json()["status"] == "succeeded"
+    # the video url must be where the node reads it: content.video_url (plain string)
+    assert r2.json()["content"]["video_url"] == "https://cdn/x.mp4"
+    assert "x.mp4" in json.dumps(r2.json())
+
+
+@respx.mock
+def test_poll_completed_with_error_maps_failed(client):
+    from app.adapters.fal_ai._models import encode_task_id
+    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-e")
+    respx.get(url__regex=r".*/requests/req-e/status").mock(
+        return_value=httpx.Response(200, json={"status": "COMPLETED"}))
+    respx.get(url__regex=r".*/requests/req-e$").mock(
+        return_value=httpx.Response(200, json={"error": "nsfw", "video": None}))
+    r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
+    assert r.json()["status"] == "failed"   # COMPLETED-with-error / no video.url => failed
+    # never succeeded with null content
+    assert r.json().get("content") is None
+
+
+@respx.mock
+def test_poll_completed_no_video_url_maps_failed(client):
+    """COMPLETED but result has neither error nor a usable video.url -> failed,
+    NOT a succeeded with null content (which would crash the node on content.video_url)."""
+    from app.adapters.fal_ai._models import encode_task_id
+    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-nv")
+    respx.get(url__regex=r".*/requests/req-nv/status").mock(
+        return_value=httpx.Response(200, json={"status": "COMPLETED"}))
+    respx.get(url__regex=r".*/requests/req-nv$").mock(
+        return_value=httpx.Response(200, json={"video": {}}))
+    r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
+    assert r.json()["status"] == "failed"
+    assert r.json().get("content") is None
+
+
+def test_poll_bad_task_id_returns_error(client):
+    r = client.get("/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/!!!notbase64!!!")
+    assert r.status_code >= 400   # BadTaskId => clear error, not 500
+    assert r.status_code < 500
+
+
+@respx.mock
+def test_poll_fal_http_error_maps_failed(client):
+    from app.adapters.fal_ai._models import encode_task_id
+    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-h")
+    respx.get(url__regex=r".*/requests/req-h/status").mock(
+        return_value=httpx.Response(500, json={"error": "boom"}))
+    r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
+    assert r.status_code == 200             # bridge returns a 200 status-doc, NOT the upstream 5xx
+    assert r.json()["status"] == "failed"   # fal 5xx => failed (a poll status doc, not raw 500)
+
+
+@respx.mock
+def test_poll_terminal_failure_status_maps_failed(client):
+    """A terminal fal status (FAILED) without ever reaching COMPLETED -> failed."""
+    from app.adapters.fal_ai._models import encode_task_id
+    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-tf")
+    respx.get(url__regex=r".*/requests/req-tf/status").mock(
+        return_value=httpx.Response(200, json={"status": "FAILED"}))
+    r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
+    assert r.json()["status"] == "failed"
+
+
+@respx.mock
+def test_poll_non_json_result_maps_failed(client):
+    from app.adapters.fal_ai._models import encode_task_id
+    tid = encode_task_id("bytedance/seedance-2.0/text-to-video", "req-nj")
+    respx.get(url__regex=r".*/requests/req-nj/status").mock(
+        return_value=httpx.Response(200, json={"status": "COMPLETED"}))
+    respx.get(url__regex=r".*/requests/req-nj$").mock(
+        return_value=httpx.Response(200, text="not json at all"))
+    r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{tid}")
+    assert r.status_code == 200
+    assert r.json()["status"] == "failed"
