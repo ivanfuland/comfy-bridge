@@ -187,6 +187,102 @@ def test_resolve_to_fal_url_passes_through_public_url(client):
     assert out == "https://cdn.example.com/v.mp4"   # public URL returned as-is, no upload
 
 
+# ── Task 9: seedream image generation (sync: queue submit + block-poll) ──────────
+@respx.mock
+def test_seedream_text_to_image_multi(client):
+    respx.post("https://queue.fal.run/fal-ai/bytedance/seedream/v4.5/text-to-image").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-s"}))
+    respx.get(url__regex=r".*/requests/req-s/status").mock(
+        return_value=httpx.Response(200, json={"status": "COMPLETED"}))
+    respx.get(url__regex=r".*/requests/req-s$").mock(
+        return_value=httpx.Response(200, json={"images": [{"url": "u1"}, {"url": "u2"}], "seed": 1}))
+    body = {"model": "seedream-4-5-251128", "prompt": "a dog", "size": "2048x2048"}
+    r = client.post("/proxy/byteplus/api/v3/images/generations", json=body)
+    assert r.status_code == 200
+    # multi-image: ALL of data[], NOT just [0]
+    assert [d["url"] for d in r.json()["data"]] == ["u1", "u2"]
+
+
+@respx.mock
+def test_seedream_t2i_payload_shape(client):
+    sub = respx.post("https://queue.fal.run/fal-ai/bytedance/seedream/v4/text-to-image").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-p"}))
+    respx.get(url__regex=r".*/requests/req-p/status").mock(
+        return_value=httpx.Response(200, json={"status": "COMPLETED"}))
+    respx.get(url__regex=r".*/requests/req-p$").mock(
+        return_value=httpx.Response(200, json={"images": [{"url": "x"}], "seed": 7}))
+    body = {
+        "model": "seedream-4-0-250828", "prompt": "a cat", "size": "1024x1024", "seed": 42,
+        "watermark": True,  # dropped per spec
+        "sequential_image_generation_options": {"max_images": 4},
+    }
+    r = client.post("/proxy/byteplus/api/v3/images/generations", json=body)
+    assert r.status_code == 200
+    sent = json.loads(sub.calls[0].request.content)
+    assert sent["prompt"] == "a cat"
+    assert sent["image_size"] == {"width": 1024, "height": 1024}
+    assert sent["seed"] == 42
+    assert sent["max_images"] == 4
+    assert "image_urls" not in sent  # no input image -> t2i, not edit
+    assert "watermark" not in sent   # dropped
+
+
+@respx.mock
+def test_seedream_edit_endpoint_when_image_present(client):
+    # with input image -> fal edit endpoint. asset resolved via the bridge cache (Task 6
+    # mechanics); mock the fal storage upload + the edit queue.
+    bridge_url = _seed_bridge_asset(data=b"EDITSRC", mime="image/png")
+    asset_id = client.post(
+        "/proxy/seedance/virtual-library/assets", json={"url": bridge_url}
+    ).json()["asset_id"]
+    respx.post("https://rest.alpha.fal.ai/storage/upload/initiate").mock(
+        return_value=httpx.Response(200, json={
+            "upload_url": "https://upload.fal.run/sp-edit",
+            "file_url": "https://cdn.fal.run/files/edit-src.png",
+        }))
+    respx.put("https://upload.fal.run/sp-edit").mock(return_value=httpx.Response(200))
+    sub = respx.post("https://queue.fal.run/fal-ai/bytedance/seedream/v5/lite/edit").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-e"}))
+    respx.get(url__regex=r".*/requests/req-e/status").mock(
+        return_value=httpx.Response(200, json={"status": "COMPLETED"}))
+    respx.get(url__regex=r".*/requests/req-e$").mock(
+        return_value=httpx.Response(200, json={"images": [{"url": "o"}]}))
+    body = {"model": "seedream-5-0-260128", "prompt": "x",
+            "image": [f"asset://{asset_id}"], "size": "2048x2048"}
+    r = client.post("/proxy/byteplus/api/v3/images/generations", json=body)
+    assert r.status_code == 200 and "o" in json.dumps(r.json())
+    sent = json.loads(sub.calls[0].request.content)
+    assert sent["image_urls"] == ["https://cdn.fal.run/files/edit-src.png"]
+
+
+def test_seedream_size_parsed(client):
+    from app.adapters.fal_ai._models import parse_image_size
+    assert parse_image_size("1024x1024") == {"width": 1024, "height": 1024}
+
+
+@respx.mock
+def test_seedream_failed_maps_error(client):
+    respx.post(url__regex=r".*/text-to-image").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-f"}))
+    respx.get(url__regex=r".*/requests/req-f/status").mock(
+        return_value=httpx.Response(200, json={"status": "FAILED"}))
+    body = {"model": "seedream-4-0-250828", "prompt": "x", "size": "1024x1024"}
+    r = client.post("/proxy/byteplus/api/v3/images/generations", json=body)
+    assert r.status_code >= 400  # fal FAILED -> error, not a fake success
+
+
+def test_seedream_unsupported_model_returns_424(client):
+    body = {"model": "seedream-3-0-t2i-250415", "prompt": "x", "size": "1024x1024"}
+    r = client.post("/proxy/byteplus/api/v3/images/generations", json=body)
+    assert r.status_code == 424
+
+
+def test_seedream_bad_size_returns_424(client):
+    body = {"model": "seedream-4-5-251128", "prompt": "x", "size": "not-a-size"}
+    r = client.post("/proxy/byteplus/api/v3/images/generations", json=body)
+    assert r.status_code == 424
+
+
 # ── Task 7: image-to-video (first/last frame) + reference-to-video (multimodal) ──
 def _stub_resolve(monkeypatch):
     """Stub _resolve_to_fal_url so the create-branch routing tests focus on which

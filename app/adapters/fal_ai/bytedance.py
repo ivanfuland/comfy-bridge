@@ -141,6 +141,13 @@ class FalBytedanceAdapter(BaseAdapter):
         if method == "GET" and p.startswith("assets/"):
             return self._asset_get(p.rsplit("/", 1)[-1])
 
+        # Image CREATE (synchronous): POST .../images/generations. The Seedream nodes
+        # have NO poll for images — sync_op expects the finished result inline. fal is
+        # queue-based, so we submit + block-poll internally (run_sync) then return the
+        # Ark ImageTaskCreationResponse the node consumes. (NOTE: images/generations,
+        # distinct from video's contents/generations/tasks.)
+        if method == "POST" and p.endswith("images/generations"):
+            return await self._image_create(raw)
         # Video CREATE: POST .../contents/generations/tasks
         if method == "POST" and p.endswith("contents/generations/tasks"):
             return await self._video_create(raw)
@@ -222,6 +229,81 @@ class FalBytedanceAdapter(BaseAdapter):
         except _fal_client.FalUpstreamError as e:
             body_obj = e.body if isinstance(e.body, dict) else {"detail": e.body}
             return _json_response({"error": body_obj}, status_code=e.status_code)
+
+    # ── image create (Task 9): synchronous Seedream gen via fal queue+block-poll ──
+    # Inbound body is the Ark Seedream4TaskCreationRequest the ComfyUI Seedream nodes
+    # POST (confirmed against ComfyUI apis/bytedance.py): {model, prompt, image: [url]?,
+    # size: "WxH", seed, sequential_image_generation_options: {max_images}, watermark}.
+    # The reference-image field is `image` (singular list) — same as native
+    # byteplus._reshape_image_create; `images` is NOT honored. Output is the Ark
+    # ImageTaskCreationResponse {model, created, data: [{url}, ...], error}; the Seedream4
+    # node reads EVERY data[i]["url"] for multi-image, so we return all images, never [0].
+    # watermark is dropped (no fal seedream param). No poll endpoint exists for images, so
+    # any error returns a 4xx/5xx with an error body (not a fake success the node can't read).
+    async def _image_create(self, raw: bytes) -> Response:
+        body: dict = {}
+        try:
+            body = json.loads(raw) if raw else {}
+            model = body.get("model", "")
+            prompt = (body.get("prompt") or "").strip()
+            image = body.get("image")
+            image_refs = list(image) if isinstance(image, list) else []
+            has_image = bool(image_refs)
+            endpoint = _models.image_endpoint(model, has_image)  # may raise UnsupportedModel
+
+            payload: dict = {
+                "prompt": prompt,
+                "image_size": _models.parse_image_size(body.get("size") or ""),  # may raise
+            }
+            seed = body.get("seed")
+            if isinstance(seed, int):
+                payload["seed"] = seed
+            opts = body.get("sequential_image_generation_options") or {}
+            req_max = opts.get("max_images") if isinstance(opts, dict) else None
+            if isinstance(req_max, int) and req_max > 0:
+                payload["max_images"] = _models.clamp_max_images(model, req_max)
+            if has_image:
+                payload["image_urls"] = [
+                    await self._resolve_to_fal_url(ref) for ref in image_refs
+                ]
+
+            result = await _fal_client.run_sync(endpoint, payload)  # blocks to completion
+            images = result.get("images") if isinstance(result, dict) else None
+            data = [
+                {"url": img["url"]}
+                for img in (images or [])
+                if isinstance(img, dict) and img.get("url")
+            ]
+            if not data:
+                # COMPLETED but no usable url -> surface an error (don't fake success;
+                # the node has no poll and would crash reading data[i]["url"]).
+                return self._image_error(model, 502, {
+                    "code": "comfy_bridge_no_image_url",
+                    "message": "fal reported completion but returned no image urls",
+                })
+            return _json_response(
+                {"model": model, "created": 0, "data": data, "error": None}
+            )
+        except AssetNotFound as e:
+            return self._image_error(body.get("model", ""), 424,
+                                     {"code": "asset_not_found", "message": str(e)})
+        except _models.UnsupportedModel as e:
+            return self._image_error(body.get("model", ""), 424,
+                                     {"code": "unsupported_model", "message": str(e)})
+        except _fal_client.FalConfigError as e:
+            return self._image_error(body.get("model", ""), 424,
+                                     {"code": "config_error", "message": str(e)})
+        except _fal_client.FalUpstreamError as e:
+            err = e.body if isinstance(e.body, dict) else {"code": "fal_error", "message": str(e.body)}
+            return self._image_error(body.get("model", ""), e.status_code, err)
+
+    def _image_error(self, model: str, status_code: int, error: dict) -> Response:
+        """Ark-shaped error ImageTaskCreationResponse. The node reads response.error;
+        we also send a non-2xx so a bridge-level handler sees the failure."""
+        return _json_response(
+            {"model": model, "created": 0, "data": [], "error": error},
+            status_code=status_code,
+        )
 
     # ── video poll (Task 8): fal queue status/result -> byteplus TaskStatusResponse ──
     # Output shape mirrors native byteplus._reshape_poll (NOT imported, §2 zero-diff):

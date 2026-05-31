@@ -65,6 +65,21 @@ def test_clamp_max_images(model, requested, capped):
     assert M.clamp_max_images(model, requested) == capped
 
 
+@pytest.mark.parametrize("size,expected", [
+    ("2048x2048", {"width": 2048, "height": 2048}),
+    ("1024x1024", {"width": 1024, "height": 1024}),
+    ("4096x2160", {"width": 4096, "height": 2160}),
+])
+def test_parse_image_size(size, expected):
+    assert M.parse_image_size(size) == expected
+
+
+@pytest.mark.parametrize("bad", ["foo", "1024", "", "axb", None])
+def test_parse_image_size_bad_raises(bad):
+    with pytest.raises(M.UnsupportedModel):
+        M.parse_image_size(bad)
+
+
 def test_build_video_payload_i2v_requires_image():
     from app.adapters.fal_ai import _models as M
     with pytest.raises(M.UnsupportedModel):

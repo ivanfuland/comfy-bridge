@@ -57,6 +57,17 @@ def normalize_ratio(ratio: str) -> str:
     return ratio if ratio in _VALID_RATIOS else _FALLBACK_RATIO
 
 
+def parse_image_size(size: str) -> dict:
+    """'2048x2048' -> {'width': 2048, 'height': 2048}. Raises UnsupportedModel on bad
+    format. fal seedream image_size accepts an {width,height} object on all three
+    versions (v4/v4.5/v5-lite; confirmed 2026-05-31 — type 'object | string' on each)."""
+    try:
+        w, h = size.lower().split("x", 1)
+        return {"width": int(w), "height": int(h)}
+    except (ValueError, AttributeError) as e:
+        raise UnsupportedModel(f"fal seedream: bad size {size!r}") from e
+
+
 def clamp_max_images(model: str, requested: int) -> int:
     cap = _IMAGE_MAX.get(_seedream_version(model), 6)
     return min(requested, cap)
