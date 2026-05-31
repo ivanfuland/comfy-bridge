@@ -7,6 +7,7 @@ same 3 route segments as the native byteplus adapter:
   byteplus-seedance2  : video poll
   seedance            : asset shim
 Native app/adapters/byteplus.py is NOT modified (spec §2)."""
+import asyncio
 import json
 import logging
 import uuid
@@ -72,6 +73,49 @@ def _content_has_media(content) -> bool:
     return False
 
 
+def _parse_media(content):
+    """Group inbound media content items by role/type (matches the byteplus node
+    shapes, confirmed against byteplus._reshape_video_create — NOT imported, §2):
+      {"type":"image_url","image_url":{"url":...},"role":"first_frame"|"last_frame"
+                                                          |"reference_image"|None}
+      {"type":"video_url","video_url":{"url":...}}
+      {"type":"audio_url","audio_url":{"url":...}}
+    Returns (first_frame, last_frame, ref_images[], videos[], audios[]) — each url an
+    inbound ref (asset://id | bridge url | public url), unresolved. A roleless image is
+    treated as a reference image (best-effort; there is no fal endpoint for a bare i2v
+    image without a first_frame role, and reference-to-video subsumes the single-image
+    case)."""
+    first_frame = None
+    last_frame = None
+    ref_images: list[str] = []
+    videos: list[str] = []
+    audios: list[str] = []
+    for item in content or []:
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "image_url":
+            url = (item.get("image_url") or {}).get("url", "")
+            if not url:
+                continue
+            role = item.get("role")
+            if role == "first_frame":
+                first_frame = url
+            elif role == "last_frame":
+                last_frame = url
+            else:  # reference_image or roleless -> reference set
+                ref_images.append(url)
+        elif itype == "video_url":
+            url = (item.get("video_url") or {}).get("url", "")
+            if url:
+                videos.append(url)
+        elif itype == "audio_url":
+            url = (item.get("audio_url") or {}).get("url", "")
+            if url:
+                audios.append(url)
+    return first_frame, last_frame, ref_images, videos, audios
+
+
 def _asset_response(asset_id: str, *, status: str, url=None, asset_type: str = "Image", error=None) -> Response:
     return _json_response({
         "id": asset_id, "name": None, "url": url,
@@ -110,23 +154,57 @@ class FalBytedanceAdapter(BaseAdapter):
     async def _video_create(self, raw: bytes) -> Response:
         try:
             body = json.loads(raw) if raw else {}
+            model = body.get("model", "")
             content = body.get("content") or []
-            # i2v/reference (content carries media) deferred to a later task.
-            if _content_has_media(content):
-                return _json_response(
-                    {"error": {"code": "not_implemented",
-                               "message": "fal-ai byteplus: image/reference video not yet supported"}},
-                    status_code=424,
-                )
             prompt0, params = _models.parse_prompt_suffix(_content_text(content))
-            endpoint = _models.video_endpoint(body.get("model", ""), False)
-            payload = _models.build_video_payload(
-                "t2v", prompt0, params, generate_audio=body.get("generate_audio"),
-            )
+            gen_audio = body.get("generate_audio")
+
+            if _content_has_media(content):
+                first, last, ref_imgs, vids, auds = _parse_media(content)
+                # i2v (FirstLastFrameNode) iff a frame role is present AND no reference
+                # set / video / audio. Otherwise reference-to-video (ReferenceNode). A
+                # request mixing a frame role with reference media is ambiguous; prefer
+                # reference-to-video (it can carry every modality, where i2v cannot).
+                if (first or last) and not (ref_imgs or vids or auds):
+                    image_urls = [await self._resolve_to_fal_url(first)] if first else []
+                    end_url = await self._resolve_to_fal_url(last) if last else None
+                    endpoint = _models.video_endpoint(model, "first_last")
+                    payload = _models.build_video_payload(
+                        "i2v", prompt0, params,
+                        image_urls=image_urls, end_image_url=end_url,
+                        generate_audio=gen_audio,
+                    )
+                else:
+                    # frames (if any) fold into the reference image set so they still
+                    # condition generation under the multimodal endpoint.
+                    all_imgs = ([first] if first else []) + ([last] if last else []) + ref_imgs
+                    img_r, vid_r, aud_r = await asyncio.gather(
+                        asyncio.gather(*[self._resolve_to_fal_url(u) for u in all_imgs]),
+                        asyncio.gather(*[self._resolve_to_fal_url(u) for u in vids]),
+                        asyncio.gather(*[self._resolve_to_fal_url(u) for u in auds]),
+                    )
+                    image_urls, video_urls, audio_urls = list(img_r), list(vid_r), list(aud_r)
+                    endpoint = _models.video_endpoint(model, "reference")
+                    payload = _models.build_video_payload(
+                        "ref", prompt0, params,
+                        image_urls=image_urls, video_urls=video_urls,
+                        audio_urls=audio_urls, generate_audio=gen_audio,
+                    )
+            else:
+                endpoint = _models.video_endpoint(model, False)
+                payload = _models.build_video_payload(
+                    "t2v", prompt0, params, generate_audio=gen_audio,
+                )
+
             req_id = await _fal_client.submit(endpoint, payload)
             task_id = _models.encode_task_id(endpoint, req_id)
             return _json_response(
-                {"id": task_id, "model": body.get("model"), "status": "queued"}
+                {"id": task_id, "model": model, "status": "queued"}
+            )
+        except AssetNotFound as e:
+            return _json_response(
+                {"error": {"code": "asset_not_found", "message": str(e)}},
+                status_code=424,
             )
         except _models.UnsupportedModel as e:
             return _json_response(

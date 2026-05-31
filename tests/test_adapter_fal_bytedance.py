@@ -56,10 +56,12 @@ def test_fal_upstream_error_passthrough(client):
     assert r.status_code == 429   # fal status passed through
 
 
-def test_media_content_deferred_424(client):
-    # content with a media item (image) currently returns 424 (i2v/ref is a later task)
+def test_media_unknown_asset_returns_424(client):
+    # content with a media item pointing at an unknown asset id -> AssetNotFound -> 424.
     body = {"model": "dreamina-seedance-2-0-260128",
-            "content": [{"text": "x"}, {"type": "image_url", "image_url": {"url": "asset://a"}}]}
+            "content": [{"text": "x"},
+                        {"type": "image_url", "image_url": {"url": "asset://does-not-exist"},
+                         "role": "first_frame"}]}
     r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
     assert r.status_code == 424
 
@@ -183,3 +185,169 @@ def test_resolve_to_fal_url_passes_through_public_url(client):
     adapter = get_adapter("seedance")
     out = asyncio.run(adapter._resolve_to_fal_url("https://cdn.example.com/v.mp4"))
     assert out == "https://cdn.example.com/v.mp4"   # public URL returned as-is, no upload
+
+
+# ── Task 7: image-to-video (first/last frame) + reference-to-video (multimodal) ──
+def _stub_resolve(monkeypatch):
+    """Stub _resolve_to_fal_url so the create-branch routing tests focus on which
+    fal endpoint/payload is built, not the upload mechanics (covered by Task 6).
+    Echoes the inbound ref so assertions can trace each url back to its source."""
+    from app.adapters.fal_ai.bytedance import FalBytedanceAdapter
+
+    async def _fake(self, ref):
+        return f"https://cdn.fal.run/files/{ref.replace('asset://', '')}"
+
+    monkeypatch.setattr(FalBytedanceAdapter, "_resolve_to_fal_url", _fake)
+
+
+@respx.mock
+def test_first_last_frame_uses_image_to_video(client, monkeypatch):
+    _stub_resolve(monkeypatch)
+    sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/image-to-video").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-i"}))
+    body = {"model": "dreamina-seedance-2-0-260128",
+            "content": [{"text": "pan --duration 5"},
+                        {"type": "image_url", "image_url": {"url": "asset://first1"},
+                         "role": "first_frame"},
+                        {"type": "image_url", "image_url": {"url": "asset://last1"},
+                         "role": "last_frame"}]}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200 and sub.called
+    sent = json.loads(sub.calls[0].request.content)
+    assert sent["image_url"] == "https://cdn.fal.run/files/first1"
+    assert sent["end_image_url"] == "https://cdn.fal.run/files/last1"
+    assert sent["prompt"].startswith("pan")
+    assert sent["duration"] == "5"
+    from app.adapters.fal_ai._models import decode_task_id
+    ep, rid = decode_task_id(r.json()["id"])
+    assert ep == "bytedance/seedance-2.0/image-to-video" and rid == "req-i"
+
+
+@respx.mock
+def test_first_frame_only_image_to_video(client, monkeypatch):
+    _stub_resolve(monkeypatch)
+    sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/image-to-video").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-f"}))
+    body = {"model": "dreamina-seedance-2-0-260128",
+            "content": [{"text": "zoom"},
+                        {"type": "image_url", "image_url": {"url": "asset://only"},
+                         "role": "first_frame"}]}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200 and sub.called
+    sent = json.loads(sub.calls[0].request.content)
+    assert sent["image_url"] == "https://cdn.fal.run/files/only"
+    assert "end_image_url" not in sent   # no last frame supplied
+
+
+@respx.mock
+def test_reference_injects_ref_tokens(client, monkeypatch):
+    _stub_resolve(monkeypatch)
+    sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/reference-to-video").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-r"}))
+    body = {"model": "dreamina-seedance-2-0-260128",
+            "content": [{"text": "two cats"},
+                        {"type": "image_url", "image_url": {"url": "asset://a1"},
+                         "role": "reference_image"},
+                        {"type": "image_url", "image_url": {"url": "asset://a2"},
+                         "role": "reference_image"}]}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200 and sub.called
+    sent = json.loads(sub.calls[0].request.content)
+    assert sent["image_urls"] == ["https://cdn.fal.run/files/a1",
+                                  "https://cdn.fal.run/files/a2"]
+    assert "@Image1" in sent["prompt"] and "@Image2" in sent["prompt"]
+
+
+@respx.mock
+def test_reference_with_video_and_audio(client, monkeypatch):
+    _stub_resolve(monkeypatch)
+    sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/reference-to-video").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-rva"}))
+    body = {"model": "dreamina-seedance-2-0-260128",
+            "content": [{"text": "scene"},
+                        {"type": "image_url", "image_url": {"url": "asset://img"},
+                         "role": "reference_image"},
+                        {"type": "video_url", "video_url": {"url": "asset://vid"}},
+                        {"type": "audio_url", "audio_url": {"url": "asset://aud"}}]}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200 and sub.called
+    sent = json.loads(sub.calls[0].request.content)
+    assert sent["image_urls"] == ["https://cdn.fal.run/files/img"]
+    assert sent["video_urls"] == ["https://cdn.fal.run/files/vid"]
+    assert sent["audio_urls"] == ["https://cdn.fal.run/files/aud"]
+
+
+@respx.mock
+def test_fast_tier_image_to_video_endpoint(client, monkeypatch):
+    _stub_resolve(monkeypatch)
+    sub = respx.post("https://queue.fal.run/bytedance/seedance-2.0/fast/image-to-video").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-fast"}))
+    body = {"model": "dreamina-seedance-2-0-fast-260128",
+            "content": [{"text": "go"},
+                        {"type": "image_url", "image_url": {"url": "asset://f"},
+                         "role": "first_frame"}]}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200 and sub.called
+
+
+# ── m4a: total > 12 → 424 ──
+@respx.mock
+def test_total_media_over_12_returns_424(client, monkeypatch):
+    """9 images + 3 videos + 1 audio = 13 total; build_video_payload raises
+    UnsupportedModel → adapter maps to 424."""
+    _stub_resolve(monkeypatch)
+    # respx the endpoint so routing doesn't fail before the payload guard fires
+    respx.post("https://queue.fal.run/bytedance/seedance-2.0/reference-to-video").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-overflow"}))
+    content = [{"text": "overflow test"}]
+    for i in range(9):
+        content.append({"type": "image_url", "image_url": {"url": f"asset://img{i}"},
+                         "role": "reference_image"})
+    for i in range(3):
+        content.append({"type": "video_url", "video_url": {"url": f"asset://vid{i}"}})
+    content.append({"type": "audio_url", "audio_url": {"url": "asset://aud0"}})
+    body = {"model": "dreamina-seedance-2-0-260128", "content": content}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 424
+
+
+# ── m4b: last_frame only (no first_frame) → 424 ──
+@respx.mock
+def test_last_frame_only_returns_424(client, monkeypatch):
+    """A last_frame without a first_frame falls into the reference branch.
+    image_urls will be empty (last_frame was folded into all_imgs but resolved
+    to nothing useful alone) — actually last_frame IS in all_imgs so image_urls=[url].
+    Wait: code path: (first or last) and not (ref_imgs or vids or auds) → i2v branch
+    because last is truthy and no ref/vid/aud. i2v branch: image_urls=[] (no first),
+    build_video_payload('i2v', ..., image_urls=[]) → UnsupportedModel → 424."""
+    _stub_resolve(monkeypatch)
+    respx.post("https://queue.fal.run/bytedance/seedance-2.0/image-to-video").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-lf"}))
+    body = {"model": "dreamina-seedance-2-0-260128",
+            "content": [{"text": "last only"},
+                        {"type": "image_url", "image_url": {"url": "asset://last-only"},
+                         "role": "last_frame"}]}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 424
+
+
+# ── m3: reference with video+audio asserts @Image1/@Video1/@Audio1 in prompt ──
+@respx.mock
+def test_reference_with_video_and_audio_has_ref_tokens(client, monkeypatch):
+    """Strengthens test_reference_with_video_and_audio: verifies that inject_ref_tokens
+    appends @Image1, @Video1, @Audio1 to the prompt."""
+    _stub_resolve(monkeypatch)
+    respx.post("https://queue.fal.run/bytedance/seedance-2.0/reference-to-video").mock(
+        return_value=httpx.Response(200, json={"request_id": "req-rva2"}))
+    body = {"model": "dreamina-seedance-2-0-260128",
+            "content": [{"text": "scene"},
+                        {"type": "image_url", "image_url": {"url": "asset://img"},
+                         "role": "reference_image"},
+                        {"type": "video_url", "video_url": {"url": "asset://vid"}},
+                        {"type": "audio_url", "audio_url": {"url": "asset://aud"}}]}
+    r = client.post("/proxy/byteplus/api/v3/contents/generations/tasks", json=body)
+    assert r.status_code == 200
+    sent = json.loads(respx.calls.last.request.content)
+    assert "@Image1" in sent["prompt"]
+    assert "@Video1" in sent["prompt"]
+    assert "@Audio1" in sent["prompt"]
