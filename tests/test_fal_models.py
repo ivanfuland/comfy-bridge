@@ -63,3 +63,9 @@ def test_task_id_decode_failure():
 ])
 def test_clamp_max_images(model, requested, capped):
     assert M.clamp_max_images(model, requested) == capped
+
+
+def test_build_video_payload_i2v_requires_image():
+    from app.adapters.fal_ai import _models as M
+    with pytest.raises(M.UnsupportedModel):
+        M.build_video_payload("i2v", "x", {}, image_urls=[])

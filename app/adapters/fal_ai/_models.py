@@ -1,6 +1,7 @@
 """Pure helpers: model->endpoint mapping, param normalization, task_id codec.
 No network, no side effects."""
 import base64
+import re
 
 
 class UnsupportedModel(ValueError):
@@ -74,3 +75,73 @@ def decode_task_id(task_id: str) -> tuple[str, str]:
         return ep, rid
     except Exception as e:
         raise BadTaskId(f"cannot decode task_id {task_id!r}: {e}") from e
+
+
+_SUFFIX_RE = re.compile(r"--(\w+)\s+(\S+)")
+
+
+def parse_prompt_suffix(prompt: str) -> tuple[str, dict]:
+    """'a cat --resolution 720p --ratio adaptive --duration 5'
+       -> ('a cat', {'resolution':'720p','ratio':'adaptive','duration':'5'})"""
+    m = _SUFFIX_RE.search(prompt)
+    if not m:
+        return prompt.strip(), {}
+    base = prompt[:m.start()].strip()
+    params = dict(_SUFFIX_RE.findall(prompt))
+    return base, params
+
+
+def build_video_payload(kind, prompt, params, *, image_urls=None,
+                        end_image_url=None, video_urls=None, audio_urls=None,
+                        generate_audio=None) -> dict:
+    """kind: 't2v'|'i2v'|'ref'. Returns fal request body.
+    generate_audio: from inbound body top-level field (adapter passes it)."""
+    p = {"prompt": prompt}
+    if "resolution" in params:
+        p["resolution"] = params["resolution"]
+    if "ratio" in params:
+        p["aspect_ratio"] = normalize_ratio(params["ratio"])
+    if "duration" in params:
+        p["duration"] = str(params["duration"])
+    if "seed" in params:
+        try:
+            p["seed"] = int(params["seed"])
+        except ValueError:
+            pass
+    if generate_audio is not None:
+        p["generate_audio"] = bool(generate_audio)
+    if kind == "i2v":
+        if not image_urls:
+            raise UnsupportedModel("fal i2v requires at least one image_url")
+        p["image_url"] = image_urls[0]
+        if end_image_url:
+            p["end_image_url"] = end_image_url
+    elif kind == "ref":
+        imgs = (image_urls or [])[:9]
+        vids = (video_urls or [])[:3]
+        auds = (audio_urls or [])[:3]
+        if len(imgs) + len(vids) + len(auds) > 12:
+            raise UnsupportedModel("fal reference: total media exceeds 12")
+        if imgs:
+            p["image_urls"] = imgs
+        if vids:
+            p["video_urls"] = vids
+        if auds:
+            p["audio_urls"] = auds
+        p["prompt"] = inject_ref_tokens(prompt, imgs, vids, auds)
+    return p
+
+
+def inject_ref_tokens(prompt, images, videos, audios) -> str:
+    """fal reference-to-video refs media as @Image1/@Video1/@Audio1 in prompt.
+    (1) Normalize the node's 'Image N'/'Video N'/'Audio N' text refs to '@ImageN' etc.
+    (2) Append @TagN for any media slot not already referenced (word-boundary safe;
+        no double-injection; case-insensitive)."""
+    out = prompt
+    for tag, items in (("Image", images), ("Video", videos), ("Audio", audios)):
+        # IGNORECASE matches input casing; replacement always emits canonical @Image/@Video/@Audio.
+        out = re.sub(rf"(?<!@)\b{tag}\s*(\d+)\b", rf"@{tag}\1", out, flags=re.IGNORECASE)
+        for i in range(1, len(items) + 1):
+            if not re.search(rf"@{tag}{i}(?!\d)", out, flags=re.IGNORECASE):
+                out = f"{out} @{tag}{i}".strip()
+    return out
