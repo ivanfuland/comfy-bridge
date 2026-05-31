@@ -254,7 +254,12 @@ def test_seedream_text_to_image_multi(client):
     r = client.post("/proxy/byteplus/api/v3/images/generations", json=body)
     assert r.status_code == 200
     # multi-image: ALL of data[], NOT just [0]
-    assert [d["url"] for d in r.json()["data"]] == ["u1", "u2"]
+    body_out = r.json()
+    assert [d["url"] for d in body_out["data"]] == ["u1", "u2"]
+    # node's ImageTaskCreationResponse pydantic model: error must be a dict (default {}),
+    # NOT None; created an int. e2e regression guard.
+    assert body_out["error"] == {} and isinstance(body_out["error"], dict)
+    assert isinstance(body_out["created"], int)
 
 
 @respx.mock

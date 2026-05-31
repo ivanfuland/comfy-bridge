@@ -294,7 +294,9 @@ class FalBytedanceAdapter(BaseAdapter):
                     "message": "fal reported completion but returned no image urls",
                 })
             return _json_response(
-                {"model": model, "created": 0, "data": data, "error": None}
+                # node's ImageTaskCreationResponse.error is `dict` (default {}),
+                # NOT Optional — error MUST be {} on success, never None (e2e fix).
+                {"model": model, "created": 0, "data": data, "error": {}}
             )
         except AssetNotFound as e:
             return self._image_error(body.get("model", ""), 424,
