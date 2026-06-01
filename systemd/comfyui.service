@@ -1,0 +1,21 @@
+[Unit]
+Description=ComfyUI (diffusion model GUI/backend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %h expands to the user's home dir. Assumes the standard layout:
+#   ~/projects/comfyui/ComfyUI         (the ComfyUI checkout)
+#   ~/projects/comfyui/.venv           (shared uv venv with cu-matched torch)
+# Override paths via drop-in (~/.config/systemd/user/comfyui.service.d/override.conf) if different.
+WorkingDirectory=%h/projects/comfyui/ComfyUI
+# Absolute path to the venv python -> uses the venv's site-packages, no `source activate` needed.
+# --comfy-api-base=http://127.0.0.1:8190 is REQUIRED: it routes ComfyUI api_node requests
+# through comfy-bridge (own keys/gateway) instead of comfy.org billing. Never drop this flag.
+ExecStart=%h/projects/comfyui/.venv/bin/python main.py --listen 127.0.0.1 --port 8188 --comfy-api-base=http://127.0.0.1:8190
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -99,10 +99,10 @@ adapter ↔ 节点锚点速查（升级后用符号名重新定位）：
 cd C:\your\workspace
 git clone https://github.com/ivanfuland/comfy-bridge.git
 powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\bootstrap.ps1
-# 按提示输入网关 URL + key；完成后双击 comfy-bridge\windows\start-comfyui.bat
+# 按提示输入网关 URL + key；完成后双击 comfy-bridge\windows\restart-all.bat
 ```
 
-所有 Windows 双击入口都在 `comfy-bridge\windows\`：`start-comfyui.bat`（启 ComfyUI）/ `start-bridge.bat`（改完 .env 重启 bridge 重载）/ `watch-bridge-log.bat`（看实时流量）。
+所有 Windows 双击入口都在 `comfy-bridge\windows\`：`restart-all.bat`（一键全栈启动/重启 + 重载 .env，bridge + ComfyUI）/ `watch-bridge-log.bat`（看实时流量）。
 
 `bootstrap.ps1` 幂等地完成：前置检查 → 装 ComfyUI → 建 bridge 环境跑测试 → 写 `.env` → 接入 custom_node → 注册自启 + 看门狗 → 启动 → 体检。
 详见 **[docs/WINDOWS-QUICKSTART.md](docs/WINDOWS-QUICKSTART.md)**（前置清单 / 刷新-重启规则 / 运维 / 常见问题）。
@@ -121,15 +121,23 @@ cp .env.example .env && chmod 600 .env   # 填 key / base URL
 # custom_node（symlink，便于升级自动同步）
 ln -sf "$(pwd)/custom_nodes/comfy-bridge-gating" /PATH/TO/ComfyUI/custom_nodes/comfy-bridge-gating
 
-# 自启
+# 自启：bridge + ComfyUI 两个 systemd --user 服务
 ln -sf "$(pwd)/systemd/comfy-bridge.service" ~/.config/systemd/user/comfy-bridge.service
-systemctl --user daemon-reload && systemctl --user enable --now comfy-bridge
+ln -sf "$(pwd)/systemd/comfyui.service"      ~/.config/systemd/user/comfyui.service
+systemctl --user daemon-reload && systemctl --user enable --now comfy-bridge comfyui
 
-# ComfyUI 启动加 --comfy-api-base=http://127.0.0.1:8190，然后验证：
+# 验证：
 curl http://127.0.0.1:8190/comfy-bridge/gating
 ```
 
-> systemd unit 用 `%h` 占位，默认假设装在 `~/projects/comfyui/comfy-bridge/`。其它路径用 drop-in 覆盖 `WorkingDirectory` / `EnvironmentFile` / `ExecStart`。
+改完 `.env` 后一键全栈重启（重载 .env + 按正确顺序重启 bridge→ComfyUI，对标 Windows `restart-all.bat`）：
+
+```bash
+linux/restart-all.sh
+```
+
+> systemd unit 用 `%h` 占位，默认假设装在 `~/projects/comfyui/comfy-bridge/`（ComfyUI 在 `~/projects/comfyui/ComfyUI/`，共享 venv 在 `~/projects/comfyui/.venv/`）。其它路径用 drop-in 覆盖 `WorkingDirectory` / `EnvironmentFile` / `ExecStart`。
+> `comfyui.service` 的 `ExecStart` 必须带 `--comfy-api-base=http://127.0.0.1:8190`（路由 api_node 经 bridge）；`restart-all.sh` 在服务缺失时会自动从 `systemd/` 链接并启用。
 
 ---
 
@@ -193,14 +201,15 @@ powershell -ExecutionPolicy Bypass -File windows\doctor.ps1
 
 ## 运维
 
-| | Windows（.bat 在 `windows\`） | Linux |
+| | Windows（.bat 在 `windows\`） | Linux（.sh 在 `linux/`） |
 |---|---|---|
-| 启动 / 重启重载 .env | 双击 `windows\start-bridge.bat`（隐藏后台服务，无窗口） | `systemctl --user restart comfy-bridge` |
+| 一键全栈启动/重启重载 .env | 双击 `windows\restart-all.bat`（bridge + ComfyUI） | `linux/restart-all.sh`（bridge + ComfyUI） |
+| 只重启 bridge 重载 .env | （`restart-all.bat` 已覆盖） | `systemctl --user restart comfy-bridge` |
 | 看日志 / 流量 | 双击 `windows\watch-bridge-log.bat` 或看 `logs\bridge.log`（每笔 `→`/`←`） | `journalctl --user -u comfy-bridge -f` |
 | 自愈 | `comfy-bridge-watchdog` 任务每 5min 健康探测 + 重启 | systemd `Restart=on-failure` |
-| 升级 | `git pull` → 双击 `windows\start-bridge.bat`（symlink 自动同步 custom_node） | `git pull` → restart |
+| 升级 | `git pull` → 双击 `windows\restart-all.bat`（symlink 自动同步 custom_node） | `git pull` → `linux/restart-all.sh` |
 
-> Windows `start-bridge.bat` 做的是正确重启：停任务 → 清 8190 端口（`Stop-ScheduledTask` 不杀子进程）→ 起任务（重载 .env）。**别直接跑 `start-bridge.ps1`**——它有幂等守卫，见服务健康即退出、不重载。
+> 改完 `.env` 用一键 `restart-all`（Win：`restart-all.bat`；Linux：`restart-all.sh`）：按 bridge→ComfyUI 顺序重启 + 健康探测。Linux 侧 `systemctl --user restart` 走 cgroup，干净杀整组子进程并重读 `EnvironmentFile`(.env)，无 Windows 那类"端口被孙进程占住"的坑——单独 `systemctl --user restart comfy-bridge` 即可重载 .env。
 
 > **Windows 上一个 bridge = 两个 `python.exe` 是正常的**：uv venv 的 `python.exe` 是 trampoline（跳板），运行时 spawn base python 作子进程（Windows 无 `exec()`）。判健康看 `doctor.ps1` 或 `:8190` 的 owner 是否稳定，**别数进程数**。启动脚本带幂等守卫（已健康则不再起第二个），重复启动是无害 no-op；勿在自启任务运行时手动 `start-bridge`（要前台调试先 `Stop-ScheduledTask`）。
 
@@ -236,14 +245,17 @@ comfy-bridge/
 ├── windows/                  # 所有 Windows .bat/.ps1/.vbs 都在这（跨平台，不放根目录）
 │   ├── bootstrap.ps1         #   一键安装（幂等）
 │   ├── doctor.ps1            #   体检
-│   ├── start-comfyui.bat     #   双击启 ComfyUI（相对路径）
-│   ├── start-bridge.bat      #   双击重启 bridge + 重载 .env
+│   ├── restart-all.bat       #   双击一键全栈启动/重启 + 重载 .env（bridge + ComfyUI）
 │   ├── watch-bridge-log.bat  #   双击看实时流量
 │   ├── start-bridge.ps1      #   服务启动器（任务经 run-hidden.vbs 调用）
 │   ├── run-hidden.vbs        #   无窗口启动器（隐藏服务）
 │   ├── healthcheck-bridge.ps1#   看门狗健康检查
 │   └── *-task-scheduler.ps1  #   注册 / 卸载自启 + 看门狗
-├── systemd/comfy-bridge.service
+├── linux/
+│   └── restart-all.sh        #   一键全栈启动/重启 + 重载 .env（systemctl --user，bridge + ComfyUI）
+├── systemd/
+│   ├── comfy-bridge.service  #   bridge（:8190，EnvironmentFile=.env）
+│   └── comfyui.service       #   ComfyUI（:8188，ExecStart 带 --comfy-api-base=:8190）
 ├── tests/                    # pytest（60）
 ├── docs/WINDOWS-QUICKSTART.md
 ├── .env.example
