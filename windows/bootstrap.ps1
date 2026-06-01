@@ -4,7 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\bootstrap.ps1
 #
 # Orchestrates the whole workspace from (almost) zero:
-#   prereq check -> install ComfyUI -> wire start-comfyui.bat -> bridge venv + tests
+#   prereq check -> install ComfyUI -> wire restart-all.bat -> bridge venv + tests
 #   -> .env (prompts for gateway+key if absent) -> symlink custom_node
 #   -> register scheduled task + watchdog -> start bridge -> doctor.
 # Each step skips work already done, so re-running just heals what's missing.
@@ -13,7 +13,7 @@
 #   <workspace>\.venv\           comfy-cli host venv
 #   <workspace>\ComfyUI\         ComfyUI + its OWN .venv (torch lives there)
 #   <workspace>\comfy-bridge\    this repo + its OWN .venv
-#   <workspace>\start-comfyui.bat
+#   <workspace>\restart-all.bat
 param(
   [string]$Workspace,
   [string]$Gateway = "",  # LLM gateway base URL (origin root, no /v1); prompted if empty
@@ -33,7 +33,7 @@ $TopVenvPy  = Join-Path $Workspace ".venv\Scripts\python.exe"
 $TopComfy   = Join-Path $Workspace ".venv\Scripts\comfy.exe"
 $ComfyPy    = Join-Path $ComfyDir ".venv\Scripts\python.exe"
 $BridgePy   = Join-Path $BridgeDir ".venv\Scripts\python.exe"
-$Bat        = Join-Path $BridgeDir "windows\start-comfyui.bat"
+$Bat        = Join-Path $BridgeDir "windows\restart-all.bat"
 
 function Section($n) { Write-Host "`n=== $n ===" -ForegroundColor Cyan }
 function Info($m)    { Write-Host "  $m" }
@@ -79,10 +79,10 @@ if ($torchOk) {
   Good "ComfyUI installed"
 }
 
-# --- 2. start-comfyui.bat -----------------------------------------------------
-# Shipped in the repo (windows\start-comfyui.bat, relative paths). Just confirm it's there;
+# --- 2. restart-all.bat -----------------------------------------------------
+# Shipped in the repo (windows\restart-all.bat, relative paths). Just confirm it's there;
 # no per-machine generation -- keeps all .bat inside windows\ (this is a cross-platform repo).
-Section "2/8 start-comfyui.bat"
+Section "2/8 restart-all.bat"
 if (Test-Path $Bat) { Good "launcher present: $Bat" }
 else { Warn "missing $Bat (expected in repo windows\ — pull latest)" }
 

@@ -50,8 +50,8 @@ if (Test-Path (Join-Path $ComfyDir "custom_nodes\comfy-bridge-gating\__init__.py
 else { Bad "custom_node missing (symlink/copy comfy-bridge-gating)" }
 
 # --- ComfyUI launcher ---
-if (Test-Path (Join-Path $Workspace "start-comfyui.bat")) { Ok "start-comfyui.bat present" }
-else { Warn "start-comfyui.bat missing" }
+if (Test-Path (Join-Path $Workspace "restart-all.bat")) { Ok "restart-all.bat present" }
+else { Warn "restart-all.bat missing" }
 
 # --- scheduled tasks ---
 $t = Get-ScheduledTask -TaskName comfy-bridge -ErrorAction SilentlyContinue
@@ -88,7 +88,7 @@ try {
   if ($names -contains "ClaudeNode") { Ok "ComfyUI :8188 up (ClaudeNode present)" } else { Warn "ComfyUI up but ClaudeNode missing" }
   if ($names -contains "KlingTextToVideoNode") { Bad "gating prune NOT applied (KlingTextToVideoNode still listed) - restart ComfyUI after bridge is up" }
   else { Ok "gating prune applied (disallowed-vendor nodes gone)" }
-} catch { Warn "ComfyUI :8188 not running - start via start-comfyui.bat (skipped menu checks)" }
+} catch { Warn "ComfyUI :8188 not running - start via restart-all.bat (skipped menu checks)" }
 
 # --- summary ---
 Write-Host ("-" * 60)

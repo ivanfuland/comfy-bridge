@@ -18,7 +18,14 @@ title restart-all  -  bridge + ComfyUI  (reload .env)
 
 echo.
 echo [1/3] Restarting bridge (:8190) + reloading .env ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Stop-ScheduledTask -TaskName comfy-bridge -EA SilentlyContinue; Get-NetTCPConnection -LocalPort 8190 -State Listen -EA SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -EA SilentlyContinue }; Start-Sleep 2; Start-ScheduledTask -TaskName comfy-bridge; $ok=$false; for($i=0;$i -lt 15;$i++){ try{ $g=(Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating -TimeoutSec 2).gating_enabled; $ok=$true; break }catch{}; Start-Sleep 2 }; if($ok){ Write-Host ('      bridge OK, gating=' + $g) -ForegroundColor Green } else { Write-Host '      bridge NOT up yet - check watch-bridge-log.bat' -ForegroundColor Yellow }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Stop-ScheduledTask -TaskName comfy-bridge -EA SilentlyContinue; Get-NetTCPConnection -LocalPort 8190 -State Listen -EA SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -EA SilentlyContinue }; Start-Sleep 2; Start-ScheduledTask -TaskName comfy-bridge; $ok=$false; for($i=0;$i -lt 15;$i++){ try{ $g=(Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating -TimeoutSec 2).gating_enabled; $ok=$true; break }catch{}; Start-Sleep 2 }; if($ok){ Write-Host ('      bridge OK, gating=' + $g) -ForegroundColor Green } else { Write-Host '      bridge NOT healthy - check watch-bridge-log.bat' -ForegroundColor Red; exit 1 }"
+if errorlevel 1 (
+  echo.
+  echo       ABORT: bridge not healthy. NOT restarting ComfyUI against it
+  echo       ^(it would fail open to comfy.org billing^). Fix the bridge, then re-run.
+  pause
+  exit /b 1
+)
 
 echo.
 echo [2/3] Stopping old ComfyUI (:8188) if running ...
