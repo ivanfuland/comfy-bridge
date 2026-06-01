@@ -1,0 +1,20 @@
+comfy-bridge 便携套件 · 接入说明
+====================================
+
+前提：你已装好 ComfyUI 官方便携包（含 run_nvidia_gpu.bat），且有一把雷火网关 key。
+
+三步接入：
+1) 用记事本打开本文件夹里的 .env，把你的雷火网关 key 粘到要用的 *_API_KEY 后面，保存。
+   （没有 .env？先把 .env.example 复制一份改名为 .env）
+2) 双击 install.bat，按提示把【ComfyUI 便携包根目录】拖进去回车。
+   它会装好节点，并在便携包里生成一个 run_nvidia_gpu_bridge.bat。
+3) 双击本文件夹的 start-bridge.bat 启动 bridge（这个黑窗口别关）；
+   再双击便携包里的 run_nvidia_gpu_bridge.bat 启动 ComfyUI。
+
+完成。ComfyUI 里的 OpenAI/Gemini/Tripo/ByteDance 等云节点会走你的 key、不扣 comfy.org 积分。
+
+注意事项：
+- 首次运行 bridge.exe，Windows 可能弹 SmartScreen 蓝盾：点"更多信息"→"仍要运行"。
+- 端口固定 8190，请勿改 .env 里的端口。
+- 想撤销：双击 uninstall.bat 指向便携包即可干净复原。
+- 启动器二选一：要接入 bridge 用 run_nvidia_gpu_bridge.bat；用官方 run_nvidia_gpu.bat 则不接入。
