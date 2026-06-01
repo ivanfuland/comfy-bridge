@@ -1,4 +1,4 @@
-comfy-bridge 便携套件 · 接入说明
+﻿comfy-bridge 便携套件 · 接入说明
 ====================================
 
 前提：你已装好 ComfyUI 官方便携包（含 run_nvidia_gpu.bat），且有一把雷火网关 key。
