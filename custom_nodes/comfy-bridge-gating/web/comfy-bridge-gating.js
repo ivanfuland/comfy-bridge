@@ -8,8 +8,8 @@
 //   - its vendor has a registered backend but the currently-loaded backend does NOT
 //     list the class as supported (loaded_node_classes capability check; e.g. Seedance
 //     1.x when the byteplus vendor is routed to fal-ai).
-// Everything else is shown as-is. There is NO "greyed / 未适配" middle state: a node is
-// either shown or hidden. To hide a node manually, add it to BRIDGE_HIDDEN_NODE_CLASSES.
+// Everything else is shown as-is. There is NO greyed / "unadapted" middle state: a node
+// is either shown or hidden. To hide a node manually, add it to BRIDGE_HIDDEN_NODE_CLASSES.
 //
 // Why setup-time (not beforeRegisterNodeDef): ComfyUI calls beforeRegisterNodeDef
 // for every node BEFORE setup runs. The gating fetch is async, so we'd race. We stash
