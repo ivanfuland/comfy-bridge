@@ -45,6 +45,24 @@ def _rewrite_body(body: dict) -> dict:
     empty parts. Non-bridge fileUri (e.g. gs:// / public GCS) and non-fileData parts
     (text, existing inlineData) are left untouched."""
     body.pop("uploadImagesToStorage", None)
+    # Strip the redundant default imageOutputOptions. ComfyUI's GeminiImageConfig always
+    # emits imageOutputOptions={"mimeType":"image/png"} (pydantic default_factory; no node
+    # widget sets it), but Google AI Studio's generativelanguage API rejects the field on
+    # every version (v1/v1beta/v1alpha) — it is a Vertex-only field. PNG is already Google's
+    # default, so dropping the default-valued field is a semantic no-op on upstreams that
+    # accept it (Vertex / leihuo gateway) and unblocks those that don't (AI Studio via
+    # litellm). A genuine non-default request (jpeg / compressionQuality) is preserved.
+    gc = body.get("generationConfig")
+    if isinstance(gc, dict):
+        ic = gc.get("imageConfig")
+        if isinstance(ic, dict):
+            opts = ic.get("imageOutputOptions")
+            if (
+                isinstance(opts, dict)
+                and opts.get("mimeType", "image/png") == "image/png"
+                and not opts.get("compressionQuality")
+            ):
+                ic.pop("imageOutputOptions", None)
     for content in body.get("contents", []) or []:
         parts = content.get("parts")
         if not isinstance(parts, list):
