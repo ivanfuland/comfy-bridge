@@ -37,14 +37,15 @@ ComfyUI 启动加 `--comfy-api-base=http://127.0.0.1:8190` 后，所有 `comfy_a
 
 | 组件 | 锁定 / 验证版本 | 出处 |
 |---|---|---|
-| ComfyUI core | **0.22.3** | `ComfyUI/comfyui_version.py` |
-| comfyui-frontend-package | 1.43.18 | `ComfyUI/requirements.txt` |
-| comfyui-workflow-templates | 0.9.85 | `ComfyUI/requirements.txt` |
-| comfyui-embedded-docs | 0.5.0 | `ComfyUI/requirements.txt` |
+| ComfyUI core | **0.22.x**（锚定 `comfy_api_nodes` 节点契约，patch 级稳定；实测 Windows 0.22.3 / Ubuntu 0.22.0） | `ComfyUI/comfyui_version.py` |
+| comfyui-frontend-package | 0.22.x 线（1.43–1.44） | `ComfyUI/requirements.txt` |
+| comfyui-workflow-templates | 0.9.x | `ComfyUI/requirements.txt` |
+| comfyui-embedded-docs | 0.5.x | `ComfyUI/requirements.txt` |
 | comfy-bridge | 0.1.0 | `pyproject.toml` |
 | Python | ≥ 3.12 | `pyproject.toml` |
 
-> adapter 引用的具体行号/字段路径都是针对 **ComfyUI 0.22.3 的 `comfy_api_nodes`** 校对的。升级 ComfyUI 后这些锚点可能位移——以源码注释里的「符号名」（类名/字段名）为准重新定位，行号仅供参考。
+> **为什么只记大版本线（0.22.x）**：这是跨平台共享文档，exact patch 逐机漂移（实测 Win 0.22.3 / Ubuntu 0.22.0，前端包同理）。适配真正耦合的是 `comfy_api_nodes` 的**节点契约**，patch 级通常不动它；**跨 minor（0.23+）才需按 §2 重新核对**。
+> adapter 引用的具体行号/字段路径按 **ComfyUI 0.22.x 的 `comfy_api_nodes`** 校对；升级后锚点可能位移——以源码注释里的「符号名」（类名/字段名）为准重新定位，行号仅供参考。
 
 ### 2. ComfyUI ↔ bridge 的耦合点（为什么不能随意升 ComfyUI）
 
@@ -65,9 +66,9 @@ adapter ↔ 节点锚点速查（升级后用符号名重新定位）：
 
 ### 3. 供应商协议 / 模型版本矩阵
 
-> 「当前型号」列是 **ComfyUI 0.22.3 的 `comfy_api_nodes` 现在暴露给前端的模型 ID**，会随 ComfyUI 升级而变。**你的网关后端必须真实支持这些型号**（或在网关侧做型号别名映射），否则节点能选但调用必失败。带日期戳的型号（`-251215` 等）尤其易随厂商更新而被替换。
+> 「当前型号」列是 **ComfyUI 0.22.x 的 `comfy_api_nodes` 现在暴露给前端的模型 ID**，会随 ComfyUI 升级而变。**你的网关后端必须真实支持这些型号**（或在网关侧做型号别名映射），否则节点能选但调用必失败。带日期戳的型号（`-251215` 等）尤其易随厂商更新而被替换。
 
-| 供应商 | 节点类 | bridge 端点 / 协议 | 鉴权 | 当前型号（comfy_api_nodes @ 0.22.3） | 网关侧要求 |
+| 供应商 | 节点类 | bridge 端点 / 协议 | 鉴权 | 当前型号（comfy_api_nodes @ 0.22.x） | 网关侧要求 |
 |---|---|---|---|---|---|
 | **OpenAI** | `OpenAIChatNode` / `OpenAIGPTImage1` / `OpenAIGPTImageNodeV2` / `OpenAIDalle2` / `OpenAIDalle3` | `POST/GET /v1/responses`、`POST /v1/images/{generations,edits}` | `Authorization: Bearer` | `gpt-5.5-pro`/`gpt-5.5`/`gpt-5`/`gpt-5-mini`/`gpt-5-nano`；图：GPT-Image-1 / v2 / DALL·E 2,3 | 须实现 `/v1/responses`；`GET /v1/responses/{id}` 可缺（bridge 有终态缓存兜底）。base 填 origin-root，会自动去重 `/v1` |
 | **Anthropic** | `ClaudeNode` | `POST /v1/messages`（原生协议） | `x-api-key` + `anthropic-version: 2023-06-01` | `claude-opus-4-7`/`-4-6`、`claude-sonnet-4-6`/`-4-5-20250929`、`claude-haiku-4-5-20251001` | 网关须**原生支持 Anthropic `/v1/messages`**（非 OpenAI 兼容层）。base **不要**带 `/v1` |
@@ -77,6 +78,12 @@ adapter ↔ 节点锚点速查（升级后用符号名重新定位）：
 | **ByteDance·Seedance（视频）** | 1.x：`ByteDanceTextToVideoNode`/`ImageToVideoNode`/`FirstLastFrameNode`/`ImageReferenceNode`；2.0：`ByteDance2TextToVideoNode`/`2FirstLastFrameNode`/`2ReferenceNode` | 节点 Ark `api/v3/contents/generations/tasks`(+poll) → 网关 `POST/GET /v1/video/generations` | `Authorization: Bearer` | 2.0：`dreamina-seedance-2-0-260128`/`-fast-260128`；1.x：`seedance-1-5-pro-251215`；已弃用：`seedance-1-0-lite-*-250428` | 1.x 参数内联在 prompt；2.0 分离字段（resolution/ratio/duration/seed/watermark）由 bridge 拼成 `--params` 后缀；模型名映射见 `_map_video_model` |
 
 > **ByteDance 三段路由 vs 门控 vendor 名不一致**（易踩坑）：adapter 注册三个路由段 `byteplus`/`byteplus-seedance2`/`seedance`（来自端点路径），共用一对 `BYTEPLUS_BASE_URL`/`BYTEPLUS_API_KEY`；而 `.env` 门控里写的是 **`bytedance`**（由 `python_module=nodes_bytedance` 推导）。两者名字不同，别混。
+
+> **ByteDance 双后端**（`BYTEPLUS_BACKEND` 切换，见 §配置）——上表是 **native（网易雷火 Ark 网关）**，型号全（Seedance 1.x + 2.0、Seedream 3.0/4.0/4.5/5.0、资产管理节点）。另一后端 **`fal-ai`**（`FAL_KEY`，走 `queue.fal.run`）支持的是子集：
+> - **视频** 仅 Seedance 2.0：`dreamina-seedance-2-0`(+`-fast`) → t2v / i2v(首尾帧) / ref2v（节点 `ByteDance2TextToVideoNode`/`2FirstLastFrameNode`/`2ReferenceNode`）
+> - **图** Seedream：`seedream-4-0`(v4) / `-4-5`(v4.5) / `-5-0`(v5-lite)，文生图 + 图生图（节点 `ByteDanceSeedreamNode`/`SeedreamNodeV2`）
+> - **不支持**：Seedance 1.x、`seedream-3-0`（`ByteDanceImageNode`）、资产管理节点（`CreateImageAsset`/`CreateVideoAsset`，返回明确 424）
+> 模型→fal endpoint 映射见 `app/adapters/fal_ai/_models.py`（`video_endpoint`/`image_endpoint`）。
 
 ### 4. 升级 checklist
 
