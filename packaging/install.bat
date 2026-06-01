@@ -1,67 +1,66 @@
-@chcp 65001 >nul
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ============================================================
-echo   comfy-bridge 接入 ComfyUI 便携包
+echo   comfy-bridge : connect to your ComfyUI portable
 echo ============================================================
 echo.
 
-rem ---- 1. 定位 ComfyUI 便携包根目录 ----
+rem ---- 1. locate the ComfyUI portable root ----
 set "ROOT=%~1"
 if "%ROOT%"=="" (
-  echo 请把【ComfyUI 便携包根目录】（含 run_nvidia_gpu.bat 那层）拖到本窗口后回车：
+  echo Drag the ComfyUI portable ROOT folder (the one with run_nvidia_gpu.bat) here, then press Enter:
   set /p "ROOT=> "
 )
-rem 去掉可能的成对引号
+rem strip surrounding quotes if any
 set "ROOT=%ROOT:"=%"
-if "%ROOT%"=="" ( echo 未输入路径。& pause & exit /b 1 )
+if "%ROOT%"=="" ( echo No path entered.& pause & exit /b 1 )
 
-rem ---- 2. 结构预检 ----
-if not exist "%ROOT%\run_nvidia_gpu.bat" ( echo [错误] 找不到 %ROOT%\run_nvidia_gpu.bat，确认是 ComfyUI 便携包根目录。& pause & exit /b 1 )
-if not exist "%ROOT%\ComfyUI\main.py"   ( echo [错误] 找不到 %ROOT%\ComfyUI\main.py。& pause & exit /b 1 )
-if not exist "%ROOT%\python_embeded\python.exe" ( echo [警告] 未见 python_embeded，可能非标准便携包，继续需自行确认。& pause )
+rem ---- 2. structural checks ----
+if not exist "%ROOT%\run_nvidia_gpu.bat" ( echo [ERROR] %ROOT%\run_nvidia_gpu.bat not found - is this the ComfyUI portable root?& pause & exit /b 1 )
+if not exist "%ROOT%\ComfyUI\main.py"   ( echo [ERROR] %ROOT%\ComfyUI\main.py not found.& pause & exit /b 1 )
+if not exist "%ROOT%\python_embeded\python.exe" ( echo [WARN] python_embeded not found - may not be a standard portable build; continue at your own risk.& pause )
 
-rem ---- 2b. 兼容探测：该 ComfyUI 是否认 --comfy-api-base（Codex plan-review #2）----
+rem ---- 2b. probe: does this ComfyUI accept --comfy-api-base ----
 "%ROOT%\python_embeded\python.exe" -s "%ROOT%\ComfyUI\main.py" --help 2>nul | findstr /C:"comfy-api-base" >nul
 if errorlevel 1 (
-  echo [警告] 这份 ComfyUI 的 main.py --help 未列出 --comfy-api-base。
-  echo   可能版本过旧/魔改，装上去 bridge 路由可能不生效。是否仍继续？
+  echo [WARN] This ComfyUI's main.py --help does not list --comfy-api-base.
+  echo   It may be too old or modified; bridge routing might not take effect. Continue anyway?
   pause
 )
 
-rem ---- 3. 拷 gating custom_node ----
+rem ---- 3. copy the gating custom_node ----
 set "DEST=%ROOT%\ComfyUI\custom_nodes\comfy-bridge-gating"
-echo [1/3] 安装 gating 节点 -^> %DEST%
-if not exist "comfy-bridge-gating\__init__.py" ( echo [错误] 套件缺少 comfy-bridge-gating，解压不完整。& pause & exit /b 1 )
+echo [1/3] installing gating node -^> %DEST%
+if not exist "comfy-bridge-gating\__init__.py" ( echo [ERROR] kit is missing comfy-bridge-gating - incomplete unzip.& pause & exit /b 1 )
 robocopy "comfy-bridge-gating" "%DEST%" /MIR /NJH /NJS /NDL /NP >nul
-if errorlevel 8 ( echo [错误] 复制 gating 节点失败。& pause & exit /b 1 )
+if errorlevel 8 ( echo [ERROR] failed to copy gating node.& pause & exit /b 1 )
 
-rem ---- 4. 生成兄弟启动器（调独立 .ps1，路径作参数；不动官方 bat）----
+rem ---- 4. generate the sibling launcher (calls separate .ps1; official bat untouched) ----
 set "SRC=%ROOT%\run_nvidia_gpu.bat"
 set "DST=%ROOT%\run_nvidia_gpu_bridge.bat"
-echo [2/3] 生成启动器 -^> %DST%
+echo [2/3] generating launcher -^> %DST%
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0_patch_launcher.ps1" -Src "%SRC%" -Dst "%DST%"
-if errorlevel 1 ( echo [错误] 启动器生成失败（官方 bat 启动行可能非常规，请手动加 --comfy-api-base）。& pause & exit /b 1 )
-if not exist "%DST%" ( echo [错误] 启动器未生成。& pause & exit /b 1 )
-findstr /C:"comfy-api-base" "%DST%" >nul || ( echo [错误] 启动器未含 --comfy-api-base。& pause & exit /b 1 )
+if errorlevel 1 ( echo [ERROR] launcher generation failed (official bat launch line may be non-standard; add --comfy-api-base by hand).& pause & exit /b 1 )
+if not exist "%DST%" ( echo [ERROR] launcher was not generated.& pause & exit /b 1 )
+findstr /C:"comfy-api-base" "%DST%" >nul || ( echo [ERROR] launcher does not contain --comfy-api-base.& pause & exit /b 1 )
 
-rem ---- 5. 准备 .env ----
-echo [3/3] 准备配置文件
-if not exist ".env.example" ( echo [错误] 套件缺少 .env.example，解压不完整。& pause & exit /b 1 )
+rem ---- 5. prepare .env ----
+echo [3/3] preparing config
+if not exist ".env.example" ( echo [ERROR] kit is missing .env.example - incomplete unzip.& pause & exit /b 1 )
 if not exist ".env" (
   copy /Y ".env.example" ".env" >nul
-  if errorlevel 1 ( echo [错误] 生成 .env 失败（目录是否只读？）。& pause & exit /b 1 )
-  if not exist ".env" ( echo [错误] .env 未生成。& pause & exit /b 1 )
-  echo   已生成 .env，请记得填入你的雷火网关 key。
+  if errorlevel 1 ( echo [ERROR] failed to create .env (is the folder read-only?).& pause & exit /b 1 )
+  if not exist ".env" ( echo [ERROR] .env was not created.& pause & exit /b 1 )
+  echo   .env created - remember to paste your gateway key into it.
 )
 
 echo.
 echo ============================================================
-echo   完成！日常用法：
-echo   1) 双击本套件的 start-bridge.bat 启动 bridge
-echo   2) 双击 %ROOT%\run_nvidia_gpu_bridge.bat 启动 ComfyUI
-echo   （仍用官方 run_nvidia_gpu.bat 则不会接入 bridge）
+echo   Done. Daily usage:
+echo   1) double-click start-bridge.bat in this kit to start the bridge
+echo   2) double-click %ROOT%\run_nvidia_gpu_bridge.bat to start ComfyUI
+echo   (using the official run_nvidia_gpu.bat will NOT route through the bridge)
 echo ============================================================
 pause
