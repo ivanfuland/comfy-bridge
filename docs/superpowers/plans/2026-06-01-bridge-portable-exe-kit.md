@@ -21,6 +21,7 @@
 - `packaging/constraints-build.txt` — 锁定构建依赖版本
 - `packaging/.env.example.kit` — 发布用 .env 模板（预填雷火 base / 日志关 / key 空）
 - `packaging/install.bat` — 套件安装器（装 gating + 生成兄弟启动器）
+- `packaging/_patch_launcher.ps1` — 启动器生成逻辑（路径作参数，apostrophe/caret 安全）
 - `packaging/start-bridge.bat` — 套件启动器
 - `packaging/uninstall.bat` — 套件卸载器
 - `packaging/接入说明.txt` — 接收方说明
@@ -225,13 +226,15 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: 源码模式实跑（需一份临时 .env）**
+- [ ] **Step 2: 源码模式实跑（不假设仓库已有 .env，Codex plan-review #11）**
 
-```bash
-copy .env .env.runpy.bak 2>nul
+`.env` 已被 `.gitignore` 忽略，干净 checkout 没有它——若缺则从发布模板生成一份：
+```bat
+if not exist .env copy /Y packaging\.env.example.kit .env
 .venv\Scripts\python run.py
 ```
-Expected: 控制台打印 `[bridge] config from ... port=8190 ...` 且 uvicorn 在 8190 监听（无 traceback）。
+Expected: 打印 `[bridge] config from ...\.env | host=127.0.0.1 port=8190 log_io=off`，uvicorn 在 8190 监听，无 traceback。
+> 若本步新建了 `.env`，验证后 `del .env`；开发机本就有真 `.env` 则保留不动。
 
 - [ ] **Step 3: 另开终端验证健康端点**
 
@@ -258,21 +261,34 @@ git commit -m "feat(portable): add run.py frozen entrypoint (chdir + override do
 （版本取自当前已验证 venv，2026-06-01）
 
 ```
-# 构建可复现性锁定（Codex #7）。CI 与本地构建共用，避免 >= 解析漂移。
+# 构建可复现性锁定（Codex #7 + plan-review #5：覆盖 uvicorn[standard] extras 与关键 transitive）。
+# CI 与本地构建共用，避免 >= 解析漂移。
 fastapi==0.136.3
+starlette==1.2.0
 uvicorn==0.48.0
+# uvicorn[standard] extras
+click==8.4.1
+colorama==0.4.6
+httptools==0.8.0
+watchfiles==1.2.0
+websockets==16.0
+# http / 校验栈
 httpx==0.28.1
 httpcore==1.0.9
 h11==0.16.0
+certifi==2026.5.20
+idna==3.17
+anyio==4.13.0
 pydantic==2.13.4
 pydantic-core==2.46.4
-anyio==4.13.0
-starlette==1.2.0
-certifi==2026.5.20
+typing_extensions==4.15.0
+annotated-types==0.7.0
 python-dotenv==1.2.2
 ```
 
-> pyinstaller 的固定版本在 Task 4 首次成功构建后回填到本文件末尾（见 Task 4 Step 5）。
+> pyinstaller 固定版本在 Task 4 首次成功构建后回填本文件末尾（见 Task 4 Step 5）。
+>
+> **完整锁定（Codex plan-review #5）**：上面是手工 pin 的关键直接/间接依赖。要彻底消除漂移，推荐用 `uv pip compile pyproject.toml --extra dev --extra build -o packaging/constraints-build.txt` 生成含**全部** transitive 的完整锁文件（本机已装 uv）。手工 pin 作为 uv 不可用时的回退基线。
 
 - [ ] **Step 2: 修改 `pyproject.toml` 增 build extra**
 
@@ -322,8 +338,14 @@ Expected: 安装成功。
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("pydantic", "pydantic_core", "anyio", "starlette", "httpx", "httpcore", "certifi"):
-    d, b, h = collect_all(pkg)
+# 含 httpx outbound 链路依赖（Codex plan-review #6）：h11/idna/sniffio + dotenv。
+# try/except 包裹：某可选包未装时跳过而非让构建崩。
+for pkg in ("pydantic", "pydantic_core", "anyio", "sniffio", "starlette",
+            "httpx", "httpcore", "h11", "certifi", "idna", "dotenv"):
+    try:
+        d, b, h = collect_all(pkg)
+    except Exception:
+        continue
     datas += d
     binaries += b
     hiddenimports += h
@@ -366,18 +388,32 @@ coll = COLLECT(
 Run: `.venv\Scripts\pyinstaller bridge.spec --noconfirm`
 Expected: 生成 `dist\bridge\bridge.exe`（无致命 hidden-import 报错）。
 
-- [ ] **Step 4: 冻结产物冒烟测试（关键，Codex #4）**
+- [ ] **Step 4: 冻结产物冒烟测试（按真实套件布局，验证 walk-up，Codex plan-review #3/#12）**
 
-在 `dist\bridge\` 旁放一份最小 .env 再跑 exe：
+⚠️ 必须按**真实套件布局**测（`.env` 在 kit 根、exe 在 `bridge\`），否则「向上找 .env」这条核心便携路径根本没被验证（本地/CI 过、用户机器挂）。用 `Start-Process -PassThru` + `try/finally Stop-Process` 稳定清理：
 
-```bat
-copy ..\..\.env dist\bridge\.env
-start "" dist\bridge\bridge.exe
-powershell -Command "Start-Sleep 4; (Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating).gating_enabled"
+```powershell
+Remove-Item -Recurse -Force kittest -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force kittest | Out-Null
+Copy-Item dist/bridge kittest/bridge -Recurse
+Copy-Item packaging/.env.example.kit kittest/.env   # .env 在 kit 根，不在 bridge\ 内
+$p = Start-Process kittest/bridge/bridge.exe -PassThru
+try {
+  $ok = $false
+  foreach ($i in 1..15) {
+    Start-Sleep 2
+    try { if ((Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating -TimeoutSec 3).gating_enabled) { $ok = $true; break } } catch {}
+  }
+  if (-not $ok) { throw "smoke 失败：gating 不健康（缺包，或 walk-up 没从 bridge\ 找到根 .env）" }
+  "smoke OK：exe 从 bridge\ 正确向上定位到根 .env，依赖收齐"
+} finally {
+  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+  Remove-Item -Recurse -Force kittest -ErrorAction SilentlyContinue
+}
 ```
-Expected: `True`（证明冻结后 fastapi/uvicorn/pydantic_core/adapters 全部收齐）。验证后结束 exe 进程并删 `dist\bridge\.env`。
+Expected: 打印 `smoke OK ...`。同时证明 ① 冻结后 fastapi/uvicorn/pydantic_core/adapters 收齐；② `run.py` 从 `bridge\` 向上正确定位根 `.env`（真实用户布局）。
 
-> 若报缺包（如 `No module named pydantic_core`），把缺失包加进 `bridge.spec` 的 `collect_all` 列表，回 Step 3 重建。
+> 若报缺包（如 `No module named pydantic_core`），把缺失包加进 `bridge.spec` 的 collect 列表，回 Step 3 重建。
 
 - [ ] **Step 5: 回填 pyinstaller 锁定版本**
 
@@ -524,10 +560,11 @@ if not exist ".env" (
   exit /b 1
 )
 
-rem 至少一个 *_API_KEY 非空（行尾 = 后面有字符）
-findstr /R /C:"_API_KEY=." ".env" >nul
+rem 至少一个 active（非注释）*_API_KEY 有非空白值（Codex plan-review #7：
+rem findstr 会把注释行/全空格值误判为有效，改用 PowerShell trim 检查）
+powershell -NoProfile -Command "if (-not (Get-Content '.env' | Where-Object { $_ -notmatch '^\s*#' -and $_ -match '^\s*[A-Z_]+_API_KEY\s*=\s*\S' })) { exit 1 }"
 if errorlevel 1 (
-  echo [comfy-bridge] .env 里所有 *_API_KEY 都为空。
+  echo [comfy-bridge] .env 里没有任何已填写的 *_API_KEY。
   echo   请打开 .env 填入你的雷火网关 key 后再启动。
   pause
   exit /b 1
@@ -557,14 +594,52 @@ git commit -m "feat(kit): add start-bridge.bat launcher with .env/key preflight"
 
 ---
 
-## Task 7: 套件安装器 `packaging/install.bat`
+## Task 7: 套件安装器 `packaging/install.bat` + `packaging/_patch_launcher.ps1`
 
 **Files:**
+- Create: `packaging/_patch_launcher.ps1`（启动器生成逻辑，路径作参数传入 — apostrophe/caret 安全）
 - Create: `packaging/install.bat`
 
-实现 spec §8.1：定位 ComfyUI 便携包 → 拷 gating 节点 → 生成兄弟启动器（full-replicate：复制官方 bat 全文，仅在 `main.py` 行尾插 `--comfy-api-base`）→ 复制 .env → 结构预检。
+实现 spec §8.1：定位 ComfyUI 便携包 → 拷 gating 节点 → 生成兄弟启动器（**优先 wrap-via-call，回退 full-replicate**）→ 复制 .env → 结构/兼容预检。
 
-- [ ] **Step 1: 写 `packaging/install.bat`**
+> 修订依据（Codex plan-review #1/#9）：启动器生成不再用 install.bat 里的 caret 多行内联 PowerShell（路径含 `'` 会破语法、无法 wrap-via-call），改为独立 `.ps1`，源/目标路径作 `-Src/-Dst` 参数传入，并先检测官方启动行是否透传 `%*`。
+
+- [ ] **Step 1: 写 `packaging/_patch_launcher.ps1`**
+
+```powershell
+param(
+  [Parameter(Mandatory)][string]$Src,
+  [Parameter(Mandatory)][string]$Dst
+)
+$ErrorActionPreference = 'Stop'
+$flag = '--comfy-api-base=http://127.0.0.1:8190'
+
+$lines = Get-Content -LiteralPath $Src
+$match = $lines | Select-String -Pattern 'python.*main\.py' | Select-Object -First 1
+if (-not $match) { Write-Error 'official launcher: no "python ... main.py" line found'; exit 3 }
+$idx = $match.LineNumber - 1
+$launch = $lines[$idx]
+
+if ($launch -match 'comfy-api-base') {
+  # 幂等：官方行已含 flag（极少见），原样复制
+  Set-Content -LiteralPath $Dst -Value $lines -Encoding Default
+}
+elseif ($launch -match '%\*') {
+  # 首选 wrap-via-call：官方行透传 %* → 不复制启动行，包装调用（spec §8.1 首选）
+  $name = Split-Path -Leaf $Src
+  $wrap = @('@echo off', ('call "%~dp0' + $name + '" ' + $flag + ' %*'))
+  Set-Content -LiteralPath $Dst -Value $wrap -Encoding Default
+}
+else {
+  # 回退 full-replicate：复制全文，仅 main.py 行尾插 flag（保留所有前置 set/%~dp0/pause）
+  $out = for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($i -eq $idx) { $lines[$i].TrimEnd() + ' ' + $flag } else { $lines[$i] }
+  }
+  Set-Content -LiteralPath $Dst -Value $out -Encoding Default
+}
+```
+
+- [ ] **Step 2: 写 `packaging/install.bat`**
 
 ```bat
 @echo off
@@ -586,10 +661,18 @@ rem 去掉可能的成对引号
 set "ROOT=%ROOT:"=%"
 if "%ROOT%"=="" ( echo 未输入路径。& pause & exit /b 1 )
 
-rem ---- 2. 结构预检（Codex #11，便携包合法性）----
+rem ---- 2. 结构预检 ----
 if not exist "%ROOT%\run_nvidia_gpu.bat" ( echo [错误] 找不到 %ROOT%\run_nvidia_gpu.bat，确认是 ComfyUI 便携包根目录。& pause & exit /b 1 )
 if not exist "%ROOT%\ComfyUI\main.py"   ( echo [错误] 找不到 %ROOT%\ComfyUI\main.py。& pause & exit /b 1 )
 if not exist "%ROOT%\python_embeded\python.exe" ( echo [警告] 未见 python_embeded，可能非标准便携包，继续需自行确认。& pause )
+
+rem ---- 2b. 兼容探测：该 ComfyUI 是否认 --comfy-api-base（Codex plan-review #2）----
+"%ROOT%\python_embeded\python.exe" -s "%ROOT%\ComfyUI\main.py" --help 2>nul | findstr /C:"comfy-api-base" >nul
+if errorlevel 1 (
+  echo [警告] 这份 ComfyUI 的 main.py --help 未列出 --comfy-api-base。
+  echo   可能版本过旧/魔改，装上去 bridge 路由可能不生效。是否仍继续？
+  pause
+)
 
 rem ---- 3. 拷 gating custom_node ----
 set "DEST=%ROOT%\ComfyUI\custom_nodes\comfy-bridge-gating"
@@ -598,21 +681,24 @@ if not exist "comfy-bridge-gating\__init__.py" ( echo [错误] 套件缺少 comf
 robocopy "comfy-bridge-gating" "%DEST%" /MIR /NJH /NJS /NDL /NP >nul
 if errorlevel 8 ( echo [错误] 复制 gating 节点失败。& pause & exit /b 1 )
 
-rem ---- 4. 生成兄弟启动器（full-replicate + 插参；不动官方 bat）----
+rem ---- 4. 生成兄弟启动器（调独立 .ps1，路径作参数；不动官方 bat）----
 set "SRC=%ROOT%\run_nvidia_gpu.bat"
 set "DST=%ROOT%\run_nvidia_gpu_bridge.bat"
 echo [2/3] 生成启动器 -^> %DST%
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$flag=' --comfy-api-base=http://127.0.0.1:8190';" ^
-  "$lines = Get-Content -LiteralPath '%SRC%';" ^
-  "$out = $lines | ForEach-Object { if ($_ -match 'python.*main\.py' -and $_ -notmatch 'comfy-api-base') { ($_.TrimEnd() + $flag) } else { $_ } };" ^
-  "Set-Content -LiteralPath '%DST%' -Value $out -Encoding Default"
-if not exist "%DST%" ( echo [错误] 启动器生成失败。& pause & exit /b 1 )
-findstr /C:"comfy-api-base" "%DST%" >nul || ( echo [错误] 启动器未含 --comfy-api-base，官方 bat 启动行可能非常规，请手动加参数。& pause & exit /b 1 )
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0_patch_launcher.ps1" -Src "%SRC%" -Dst "%DST%"
+if errorlevel 1 ( echo [错误] 启动器生成失败（官方 bat 启动行可能非常规，请手动加 --comfy-api-base）。& pause & exit /b 1 )
+if not exist "%DST%" ( echo [错误] 启动器未生成。& pause & exit /b 1 )
+findstr /C:"comfy-api-base" "%DST%" >nul || ( echo [错误] 启动器未含 --comfy-api-base。& pause & exit /b 1 )
 
 rem ---- 5. 准备 .env ----
 echo [3/3] 准备配置文件
-if not exist ".env" ( copy /Y ".env.example" ".env" >nul & echo   已生成 .env，请记得填入你的雷火网关 key。)
+if not exist ".env.example" ( echo [错误] 套件缺少 .env.example，解压不完整。& pause & exit /b 1 )
+if not exist ".env" (
+  copy /Y ".env.example" ".env" >nul
+  if errorlevel 1 ( echo [错误] 生成 .env 失败（目录是否只读？）。& pause & exit /b 1 )
+  if not exist ".env" ( echo [错误] .env 未生成。& pause & exit /b 1 )
+  echo   已生成 .env，请记得填入你的雷火网关 key。
+)
 
 echo.
 echo ============================================================
@@ -624,23 +710,23 @@ echo ============================================================
 pause
 ```
 
-> 设计依据（spec §8.1）：ComfyUI 官方便携 `run_nvidia_gpu.bat` 的启动行通常**不带** `%*`，故采用 full-replicate（复制全文、仅 `main.py` 行尾插参），而非 wrap-via-call。`/MIR` 使重复安装幂等；`%notmatch comfy-api-base%` 防重复插参。
+> `/MIR` 使重复安装幂等；`_patch_launcher.ps1` 内对已含 flag 的官方行原样复制，防重复插参。
 
-- [ ] **Step 2: 用一份真实/模拟便携包验证**
+- [ ] **Step 3: 用模拟便携包验证（覆盖 Codex plan-review #1/#9 测试矩阵）**
 
-准备一个目录 `mockcomfy\`，内含 `run_nvidia_gpu.bat`（一行：`.\python_embeded\python.exe -s ComfyUI\main.py --windows-standalone-build` + 一行 `pause`）、`ComfyUI\main.py`、`python_embeded\python.exe`（空占位）。把 `packaging\install.bat` 与 `comfy-bridge-gating\`（从仓库 `custom_nodes\` 拷）放到套件目录后运行：
+准备 `mockcomfy\`：`run_nvidia_gpu.bat`（含 `.\python_embeded\python.exe -s ComfyUI\main.py --windows-standalone-build` + `pause`）、`ComfyUI\main.py`、`python_embeded\python.exe`（占位）。把 `install.bat`、`_patch_launcher.ps1`、`comfy-bridge-gating\`（从仓库 `custom_nodes\` 拷）、`.env.example`（从 `packaging\.env.example.kit` 拷）放进当前目录后：
 
 Run: `packaging\install.bat <绝对路径>\mockcomfy`
 Expected:
 - `mockcomfy\ComfyUI\custom_nodes\comfy-bridge-gating\__init__.py` 存在；
-- `mockcomfy\run_nvidia_gpu_bridge.bat` 存在，且 main.py 行尾含 `--comfy-api-base=http://127.0.0.1:8190`；官方 `run_nvidia_gpu.bat` 内容未变；
-- 含空格路径（`mock comfy\`）重跑仍成功；再跑一次幂等（不重复插参）。
+- `mockcomfy\run_nvidia_gpu_bridge.bat` 存在且含 `--comfy-api-base=http://127.0.0.1:8190`；官方 `run_nvidia_gpu.bat` 内容未变；
+- **测试矩阵**：① 路径含空格（`mock comfy\`）成功；② 路径含 `'`（`mock'comfy\`）成功（验证 #9）；③ 官方行带 `%*` 时生成的是 `call ... %*` wrapper（验证 #1）；④ 不带 `%*` 时是全文复制插参；⑤ 重复运行幂等（不重复插参）。
 
-- [ ] **Step 3: 提交**
+- [ ] **Step 4: 提交**
 
 ```bash
-git add packaging/install.bat
-git commit -m "feat(kit): add install.bat (copy gating + generate sibling launcher, idempotent)"
+git add packaging/install.bat packaging/_patch_launcher.ps1
+git commit -m "feat(kit): add install.bat + _patch_launcher.ps1 (wrap-via-call/full-replicate, api-base probe)"
 ```
 
 ---
@@ -758,31 +844,35 @@ jobs:
       - name: Install deps (pinned)
         run: |
           python -m pip install --upgrade pip
-          pip install -e . -c packaging/constraints-build.txt
+          pip install -e ".[dev]" -c packaging/constraints-build.txt
           pip install pyinstaller -c packaging/constraints-build.txt
+
+      - name: Run tests (gate release on green)   # Codex plan-review #4
+        run: pytest -q
 
       - name: Build exe (onedir)
         run: pyinstaller bridge.spec --noconfirm
 
-      - name: Smoke test frozen exe
+      - name: Smoke test frozen exe (REAL kit layout)   # Codex plan-review #3
         shell: pwsh
         run: |
-          Copy-Item packaging/.env.example.kit dist/bridge/.env
-          $p = Start-Process dist/bridge/bridge.exe -PassThru
+          New-Item -ItemType Directory -Force kittest | Out-Null
+          Copy-Item dist/bridge kittest/bridge -Recurse
+          Copy-Item packaging/.env.example.kit kittest/.env   # .env at kit root, NOT inside bridge\
+          $p = Start-Process kittest/bridge/bridge.exe -PassThru
           try {
             $ok = $false
             foreach ($i in 1..15) {
               Start-Sleep 2
               try {
-                $r = Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating -TimeoutSec 3
-                if ($r.gating_enabled) { $ok = $true; break }
+                if ((Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating -TimeoutSec 3).gating_enabled) { $ok = $true; break }
               } catch {}
             }
-            if (-not $ok) { throw "frozen exe smoke test failed: /comfy-bridge/gating not healthy" }
-            Write-Host "smoke test OK"
+            if (-not $ok) { throw "frozen exe smoke failed: gating unhealthy (missing dep, or walk-up did not find root .env)" }
+            Write-Host "smoke OK (exe located root .env from bridge\)"
           } finally {
-            Stop-Process -Id $p.Id -Force
-            Remove-Item dist/bridge/.env -Force
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force kittest -ErrorAction SilentlyContinue
           }
 
       - name: Verify gating node files present
@@ -802,12 +892,31 @@ jobs:
           Copy-Item custom_nodes/comfy-bridge-gating "$kit/comfy-bridge-gating" -Recurse
           Copy-Item packaging/.env.example.kit "$kit/.env.example"
           Copy-Item packaging/install.bat "$kit/"
+          Copy-Item packaging/_patch_launcher.ps1 "$kit/"
           Copy-Item packaging/start-bridge.bat "$kit/"
           Copy-Item packaging/uninstall.bat "$kit/"
           Copy-Item "packaging/接入说明.txt" "$kit/"
           $zip = "comfy-bridge-kit-$($env:GITHUB_REF_NAME).zip"
           Compress-Archive -Path "$kit/*" -DestinationPath $zip -Force
           echo "ZIP=$zip" >> $env:GITHUB_ENV
+
+      - name: Verify zip structure   # Codex plan-review #10
+        shell: pwsh
+        run: |
+          Expand-Archive -Path $env:ZIP -DestinationPath ziptest -Force
+          $need = @(
+            "ziptest/bridge/bridge.exe",
+            "ziptest/comfy-bridge-gating/__init__.py",
+            "ziptest/comfy-bridge-gating/web/comfy-bridge-gating.js",
+            "ziptest/.env.example",
+            "ziptest/install.bat",
+            "ziptest/_patch_launcher.ps1",
+            "ziptest/start-bridge.bat",
+            "ziptest/uninstall.bat",
+            "ziptest/接入说明.txt"
+          )
+          foreach ($f in $need) { if (-not (Test-Path -LiteralPath $f)) { throw "zip missing $f" } }
+          Write-Host "zip structure OK"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -876,6 +985,27 @@ Expected: Releases 出现正式 `v0.1.0` 套件。
 
 ## 自审记录
 
-- **Spec 覆盖**：§4 边车（Task 7/9 落地胶水点）、§5 套件结构（Task 10 组装）、§6 打包（Task 1/2/4）、§7 配置（Task 1 预检 / Task 5 模板 / Task 6 自检）、§8 脚本（Task 6/7/8）、§9 发布（Task 10）、§10 坑（Task 4 冒烟 / Task 5 模板 / Task 7 兄弟启动器）、§11 验证（Task 11）、§14 采纳清单逐条对应（#4→Task4、#5→Task2、#6→Task1+5、#7→Task3、#8→Task5、#9→Task7、#10→Task5、#11→Task7、#12→Task10 verify step）。CRITICAL #1–3 = Task 2/4、6/7/8、10。
+- **Spec 覆盖**：§4 边车（Task 7/9 落地胶水点）、§5 套件结构（Task 10 组装）、§6 打包（Task 1/2/4）、§7 配置（Task 1 预检 / Task 5 模板 / Task 6 自检）、§8 脚本（Task 6/7/8）、§9 发布（Task 10）、§10 坑（Task 4 冒烟 / Task 5 模板 / Task 7 兄弟启动器）、§11 验证（Task 11）、§14 采纳清单逐条对应（#4→Task4、#5→Task2、#6→Task1+5、#7→Task3、#8→Task5、#9→Task7、#10→Task5、#11→**部分**Task7、#12→Task10 verify step）。CRITICAL #1–3 = Task 2/4、6/7/8、10。
 - **占位符扫描**：无 TBD/TODO；pyinstaller 版本以「实跑回填」具体动作替代占位（Task 4 Step 5）。
 - **类型/命名一致**：`resolve_base_dir` / `missing_bases_for_filled_keys` 在 Task 1 定义，Task 2 `run.py` 同名调用；`.env.example.kit` 在 Task 5 产出、Task 10 组装时复制为 `.env.example`；端口常量 8190 在模板/启动器/install/release 全一致。
+
+## 第二轮 Codex 审核（plan-review）采纳
+
+2026-06-01 对本 plan 再做一次 Codex 对抗审核，12 条全部成立、已逐条修订：
+
+| # | 严重度 | 发现 | 处置 |
+|---|---|---|---|
+| 1 | HIGH | install.bat 只做 full-replicate，违反 spec「优先 wrap-via-call」 | 已改 Task 7：`_patch_launcher.ps1` 检测 `%*`，优先 wrap-via-call、回退全文复制。 |
+| 2 | HIGH | ComfyUI 兼容探测未做，自审却称已覆盖 | 已加 Task 7 install.bat 的 `main.py --help` 探测 `--comfy-api-base`；自审 #11 改标「部分覆盖」，运行时 object_info 探测列为遗留风险（§见下）。 |
+| 3 | HIGH | 冒烟用错 .env 布局，walk-up 未被验证 | 已改 Task 4 + Task 10：按真实套件布局（`.env` 在 kit 根、exe 在 `bridge\`）冒烟。 |
+| 4 | HIGH | release.yml 不跑 pytest | 已加 Task 10 `pytest -q` 守门步骤（装 `.[dev]`）。 |
+| 5 | HIGH | 构建依赖未完全锁定 | 已扩 Task 3 constraints（含 uvicorn[standard] extras + transitive）+ 推荐 `uv pip compile` 生成完整锁。 |
+| 6 | MED | bridge.spec collect 缺 h11/idna/dotenv 等 | 已扩 Task 4 collect 列表（+h11/idna/sniffio/dotenv，try/except 容错）。 |
+| 7 | MED | start-bridge.bat findstr 误判注释/空格 | 已改 Task 6 用 PowerShell trim 检查 active 行。 |
+| 8 | MED | install.bat 不检 .env.example 存在/copy 成功 | 已加 Task 7 存在性 + errorlevel + 文件校验。 |
+| 9 | MED | 内联 PS caret 拼路径含 `'` 破语法 | 已改 Task 7：独立 `_patch_launcher.ps1`，路径作 `-Src/-Dst` 参数。 |
+| 10 | MED | release 压包后无结构校验 | 已加 Task 10 `Expand-Archive` + 逐项 `Test-Path` 校验。 |
+| 11 | LOW | Task 2 验证假设仓库已有 .env | 已改 Task 2：缺则从模板生成临时 .env。 |
+| 12 | LOW | Task 4 冒烟进程清理不稳 | 已改 Task 4/10 统一 `Start-Process -PassThru` + `try/finally Stop-Process`。 |
+
+**遗留风险（明示）**：#11 的「ComfyUI 运行时 `/object_info` 字段探测」未实现——install.bat 只做了结构检查 + `--help` 参数探测。若对方 ComfyUI 魔改导致 gating 依赖的 `python_module` 字段缺失，gating 会 fail-open（菜单显示全部节点但不误扣积分，因路由保护独立生效）。列为后续迭代项，不阻断首版。
