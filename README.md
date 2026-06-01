@@ -81,7 +81,7 @@ adapter ↔ 节点锚点速查（升级后用符号名重新定位）：
 
 > **ByteDance 双后端**（`BYTEPLUS_BACKEND` 切换，见 §配置）——上表是 **native（网易雷火 Ark 网关）**，型号全（Seedance 1.x + 2.0、Seedream 3.0/4.0/4.5/5.0、资产管理节点）。另一后端 **`fal-ai`**（`FAL_KEY`，走 `queue.fal.run`）支持的是子集：
 > - **视频** 仅 Seedance 2.0：`dreamina-seedance-2-0`(+`-fast`) → t2v / i2v(首尾帧) / ref2v（节点 `ByteDance2TextToVideoNode`/`2FirstLastFrameNode`/`2ReferenceNode`）
-> - **图** Seedream：`seedream-4-0`(v4) / `-4-5`(v4.5) / `-5-0`(v5-lite)，文生图 + 图生图（节点 `ByteDanceSeedreamNode`/`SeedreamNodeV2`）
+> - **图** Seedream（型号 ID 前缀）：`seedream-4-0`(v4) / `-4-5`(v4.5) / `-5-0`(v5-lite)，文生图 + 图生图（节点 `ByteDanceSeedreamNode`/`ByteDanceSeedreamNodeV2`）
 > - **不支持**：Seedance 1.x、`seedream-3-0`（`ByteDanceImageNode`）、资产管理节点（`CreateImageAsset`/`CreateVideoAsset`，返回明确 424）
 > 模型→fal endpoint 映射见 `app/adapters/fal_ai/_models.py`（`video_endpoint`/`image_endpoint`）。
 
