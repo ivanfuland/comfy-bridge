@@ -4,7 +4,7 @@ param(
 )
 # ASCII-only on purpose: install.bat invokes this via `powershell` (Windows PowerShell
 # 5.1), which decodes a BOM-less .ps1 using the system ANSI code page. Non-ASCII comments
-# would be mis-decoded on non-English Windows and break parsing — keep this file ASCII.
+# would be mis-decoded on non-English Windows and break parsing -- keep this file ASCII.
 $ErrorActionPreference = 'Stop'
 $flag = '--comfy-api-base=http://127.0.0.1:8190'
 
