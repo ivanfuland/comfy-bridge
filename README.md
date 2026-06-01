@@ -205,7 +205,7 @@ powershell -ExecutionPolicy Bypass -File windows\doctor.ps1
 |---|---|---|
 | 一键全栈启动/重启重载 .env | 双击 `windows\restart-all.bat`（bridge + ComfyUI） | `linux/restart-all.sh`（bridge + ComfyUI） |
 | 只重启 bridge 重载 .env | （`restart-all.bat` 已覆盖） | `systemctl --user restart comfy-bridge` |
-| 看日志 / 流量 | 双击 `windows\watch-bridge-log.bat` 或看 `logs\bridge.log`（每笔 `→`/`←`） | `journalctl --user -u comfy-bridge -f` |
+| 看日志 / 流量 | 双击 `windows\watch-bridge-log.bat` 或看 `logs\bridge.log`（每笔 `→`/`←`） | `linux/watch-bridge-log.sh`（= `journalctl --user -u comfy-bridge -f`） |
 | 自愈 | `comfy-bridge-watchdog` 任务每 5min 健康探测 + 重启 | systemd `Restart=on-failure` |
 | 升级 | `git pull` → 双击 `windows\restart-all.bat`（symlink 自动同步 custom_node） | `git pull` → `linux/restart-all.sh` |
 
@@ -252,7 +252,8 @@ comfy-bridge/
 │   ├── healthcheck-bridge.ps1#   看门狗健康检查
 │   └── *-task-scheduler.ps1  #   注册 / 卸载自启 + 看门狗
 ├── linux/
-│   └── restart-all.sh        #   一键全栈启动/重启 + 重载 .env（systemctl --user，bridge + ComfyUI）
+│   ├── restart-all.sh        #   一键全栈启动/重启 + 重载 .env（systemctl --user，bridge + ComfyUI）
+│   └── watch-bridge-log.sh   #   跟实时流量（journalctl --user -u comfy-bridge -f）
 ├── systemd/
 │   ├── comfy-bridge.service  #   bridge（:8190，EnvironmentFile=.env）
 │   └── comfyui.service       #   ComfyUI（:8188，ExecStart 带 --comfy-api-base=:8190）
