@@ -60,11 +60,18 @@ def test_task_id_decode_failure():
 
 
 @pytest.mark.parametrize("evil_url", [
-    "https://evil.com/x",                       # arbitrary host
-    "http://queue.fal.run/x",                   # http (not https)
-    "https://queue.fal.run.evil.com/x",         # subdomain trick
-    "https://evil.com/queue.fal.run/x",         # path trick
-    "file:///etc/passwd",                       # non-http scheme
+    "https://evil.com/x",                        # arbitrary host
+    "http://queue.fal.run/x",                    # http (not https)
+    "https://queue.fal.run.evil.com/x",          # suffix subdomain trick
+    "https://evil.queue.fal.run/x",              # prefix subdomain trick
+    "https://evil.com/queue.fal.run/x",          # path trick
+    "https://queue.fal.run@evil.com/x",          # userinfo trap (netloc=queue.fal.run@evil.com)
+    "https://queue.fal.run:80@evil.com/x",       # userinfo+port trap
+    "https://Queue.Fal.Run/x",                   # case trick
+    "https://queue.fal.run./x",                  # trailing-dot host
+    "file:///etc/passwd",                        # non-http scheme
+    "//queue.fal.run/x",                         # scheme-relative (empty scheme)
+    "ftp://queue.fal.run/x",                     # wrong scheme
 ])
 def test_decode_task_id_rejects_non_fal_url(evil_url):
     """SSRF / FAL_KEY-leak guard: a forged task_id that decodes to a non-queue.fal.run
