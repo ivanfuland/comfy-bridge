@@ -56,6 +56,7 @@ def main() -> None:
     print("[bridge] The lines below are NORMAL startup logs, NOT errors.")
     print("[bridge] Keep this window OPEN, then start ComfyUI via run_nvidia_gpu_bridge.bat.")
     print(bar)
+    sys.stdout.flush()  # ensure the banner shows immediately, even when stdout is buffered
 
     uvicorn.run(app, host=host, port=port, loop="asyncio", http="h11", log_config=None)
 
