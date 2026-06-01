@@ -25,11 +25,13 @@ def main() -> None:
 
     missing = missing_bases_for_filled_keys(os.environ)
     if missing:
+        # explicit f-string (no implicit literal concatenation — avoids silently
+        # dropping a line if someone edits between literals later)
+        providers = ", ".join(missing)
         sys.stderr.write(
-            "[bridge] 配置错误：以下 provider 填了 API key 但 *_BASE_URL 为空："
-            + ", ".join(missing) + "\n"
-            "[bridge] 便携套件应使用预填雷火网关地址的 .env（见 .env.example）；"
-            "补全对应 *_BASE_URL（如 https://ai.leihuo.netease.com）后重试。\n"
+            f"[bridge] 配置错误：以下 provider 填了 API key 但 *_BASE_URL 为空：{providers}\n"
+            f"[bridge] 便携套件应使用预填雷火网关地址的 .env（见 .env.example）；"
+            f"补全对应 *_BASE_URL（如 https://ai.leihuo.netease.com）后重试。\n"
         )
         raise SystemExit(2)
 
