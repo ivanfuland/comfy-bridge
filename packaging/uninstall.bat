@@ -7,7 +7,7 @@ if "%ROOT%"=="" (
   echo Drag the ComfyUI portable ROOT folder here, then press Enter:
   set /p "ROOT=> "
 )
-set "ROOT=%ROOT:"=%"
+if defined ROOT set "ROOT=%ROOT:"=%"
 if "%ROOT%"=="" ( echo No path entered.& pause & exit /b 1 )
 
 set "DEST=%ROOT%\ComfyUI\custom_nodes\comfy-bridge-gating"

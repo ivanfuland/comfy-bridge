@@ -40,8 +40,23 @@ def main() -> None:
     log_io = os.getenv("BRIDGE_LOG_IO", "on")
     print(f"[bridge] config from {os.path.join(base, '.env')} | host={host} port={port} log_io={log_io}")
 
+    import logging
     import uvicorn
     from app.main import app
+
+    # Friendly console output: uvicorn names its main logger "uvicorn.error" even for
+    # normal INFO lines, which reads as a wall of errors to non-technical users. Reformat
+    # the root handler (app.main's basicConfig attached one) to drop the scary logger name,
+    # and print an ASCII banner so nobody mistakes the running server for a failure.
+    for _h in logging.getLogger().handlers:
+        _h.setFormatter(logging.Formatter("[bridge] %(message)s"))
+    bar = "=" * 64
+    print(bar)
+    print(f"[bridge] READY on http://{host}:{port}  --  this window IS the running service.")
+    print("[bridge] The lines below are NORMAL startup logs, NOT errors.")
+    print("[bridge] Keep this window OPEN, then start ComfyUI via run_nvidia_gpu_bridge.bat.")
+    print(bar)
+
     uvicorn.run(app, host=host, port=port, loop="asyncio", http="h11", log_config=None)
 
 
