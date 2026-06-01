@@ -1,6 +1,6 @@
 @chcp 65001 >nul
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ============================================================
