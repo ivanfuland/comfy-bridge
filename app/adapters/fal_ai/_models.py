@@ -2,6 +2,13 @@
 No network, no side effects."""
 import base64
 import re
+from urllib.parse import urlparse
+
+# task_id decodes to a URL the poll path will GET *with the FAL_KEY header*. It MUST
+# be locked to fal's queue host — otherwise a forged task_id could decode to an
+# arbitrary URL and exfiltrate FAL_KEY (SSRF / credential leak). The poll-flow URLs
+# fal returns are always on this host.
+_FAL_QUEUE_HOST = "queue.fal.run"
 
 
 class UnsupportedModel(ValueError):
@@ -97,8 +104,13 @@ def decode_task_id(task_id: str) -> str:
         url = base64.urlsafe_b64decode(task_id + pad).decode()
     except Exception as e:
         raise BadTaskId(f"cannot decode task_id {task_id!r}: {e}") from e
-    if not url.startswith(("http://", "https://")):
-        raise BadTaskId(f"decoded task_id is not a fal url: {url!r}")
+    # SSRF / FAL_KEY-leak guard: the poll path GETs this url WITH the FAL_KEY header,
+    # so it must be exactly https on fal's queue host — never an arbitrary url from a
+    # forged task_id. (https + exact netloc; the trailing-dot / subdomain tricks like
+    # "queue.fal.run.evil.com" fail the exact-netloc check.)
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != _FAL_QUEUE_HOST:
+        raise BadTaskId(f"decoded task_id is not a fal queue url: {url!r}")
     return url
 
 

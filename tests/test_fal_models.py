@@ -59,6 +59,26 @@ def test_task_id_decode_failure():
         M.decode_task_id("!!!")
 
 
+@pytest.mark.parametrize("evil_url", [
+    "https://evil.com/x",                       # arbitrary host
+    "http://queue.fal.run/x",                   # http (not https)
+    "https://queue.fal.run.evil.com/x",         # subdomain trick
+    "https://evil.com/queue.fal.run/x",         # path trick
+    "file:///etc/passwd",                       # non-http scheme
+])
+def test_decode_task_id_rejects_non_fal_url(evil_url):
+    """SSRF / FAL_KEY-leak guard: a forged task_id that decodes to a non-queue.fal.run
+    url MUST raise BadTaskId (the poll path GETs this url WITH the FAL_KEY header)."""
+    forged = M.encode_task_id(evil_url)  # encode is a dumb codec; the guard lives on decode
+    with pytest.raises(M.BadTaskId):
+        M.decode_task_id(forged)
+
+
+def test_decode_task_id_accepts_fal_queue_url():
+    url = "https://queue.fal.run/bytedance/seedance-2.0/requests/abc"
+    assert M.decode_task_id(M.encode_task_id(url)) == url
+
+
 @pytest.mark.parametrize("model,requested,capped", [
     ("seedream-5-0-260128", 14, 6),
     ("seedream-4-5-251128", 10, 10),

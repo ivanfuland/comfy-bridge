@@ -571,6 +571,20 @@ def test_poll_bad_task_id_returns_error(client):
 
 
 @respx.mock
+def test_poll_forged_task_id_does_not_leak_fal_key(client):
+    """SSRF guard (codex PR P0): a task_id forged to decode to an attacker url must NOT
+    cause the bridge to GET that url (which would carry the FAL_KEY header). Expect a
+    400 and ZERO outbound request to the attacker host."""
+    from app.adapters.fal_ai._models import encode_task_id
+    evil = respx.get(url__regex=r"https://evil\.com/.*").mock(
+        return_value=httpx.Response(200, json={"status": "COMPLETED"}))
+    forged = encode_task_id("https://evil.com/bytedance/seedance-2.0/requests/x")
+    r = client.get(f"/proxy/byteplus-seedance2/api/v3/contents/generations/tasks/{forged}")
+    assert 400 <= r.status_code < 500          # rejected as bad task id
+    assert not evil.called                      # FAL_KEY never sent to evil.com
+
+
+@respx.mock
 def test_poll_fal_http_error_maps_failed(client):
     from app.adapters.fal_ai._models import encode_task_id
     tid = encode_task_id(f"{_APP}/requests/req-h")
