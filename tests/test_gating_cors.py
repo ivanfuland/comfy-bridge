@@ -63,14 +63,9 @@ def test_gating_endpoint_on(monkeypatch):
     # NB: ByteDance's gating vendor is "bytedance" (from python_module nodes_bytedance),
     # distinct from the byteplus/byteplus-seedance2 route segments the adapter registers.
     assert set(body["allowed_vendors"]) == {"openai", "anthropic", "gemini", "tripo", "bytedance"}
-    # class tier (fine): vendor allowed but class not -> greyed "未适配"
-    assert isinstance(body["allowed_node_classes"], list)
-    assert "ClaudeNode" in body["allowed_node_classes"]
-    assert "ByteDance2TextToVideoNode" in body["allowed_node_classes"]
-    # corrected real class names (had typo OpenAIImage / GeminiImage in earlier rev)
-    assert "OpenAIImage" not in body["allowed_node_classes"]
-    assert "GeminiImageNode" in body["allowed_node_classes"]
-    assert "GeminiImage2Node" in body["allowed_node_classes"]
+    # the per-class allowlist / "未适配" grey tier was removed: the endpoint no longer
+    # serves allowed_node_classes — a node is either shown or hidden.
+    assert "allowed_node_classes" not in body
     # per-class hard-hide denylist (default empty; set via BRIDGE_HIDDEN_NODE_CLASSES)
     assert isinstance(body["hidden_node_classes"], list)
 

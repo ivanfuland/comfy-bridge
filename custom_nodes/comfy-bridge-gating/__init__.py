@@ -1,7 +1,8 @@
 """comfy-bridge gating extension. Two interventions:
 
-1) Web extension (web/comfy-bridge-gating.js) -- class-tier grey [未适配] for
-   api_nodes whose vendor is allowed but class isn't on the per-class allowlist.
+1) Web extension (web/comfy-bridge-gating.js) -- hides (removes from the menu)
+   api_nodes whose vendor isn't allowed, that are on the hidden denylist, or that
+   the loaded backend doesn't support. There is no grey "未适配" state.
 
 2) Python side (this file) -- at custom_nodes load time, remove disallowed-
    vendor api_node classes from nodes.NODE_CLASS_MAPPINGS so the new Vue
@@ -10,8 +11,8 @@
    has already populated NODE_CLASS_MAPPINGS by the time custom_nodes load
    (see ComfyUI/nodes.py:init_extra_nodes).
 
-Single source of truth for the allowlist: http://127.0.0.1:8190/comfy-bridge/gating
-(returns {gating_enabled, allowed_vendors, allowed_node_classes}). On bridge
+Single source of truth: http://127.0.0.1:8190/comfy-bridge/gating
+(returns {gating_enabled, allowed_vendors, hidden_node_classes, ...}). On bridge
 unreachable: fail-open -- no pruning (don't lock the user out)."""
 import json
 import logging

@@ -38,3 +38,17 @@ def test_log_io_defaults_off():
 def test_port_not_actively_exposed():
     # 套件锁死 8190：不应有 active 的 BRIDGE_PORT= 行（注释说明可以有）
     assert "BRIDGE_PORT" not in _parse(TEMPLATE)
+
+
+def test_gating_prefilled_correctly():
+    env = _parse(TEMPLATE)
+    # 5 adapted vendors active so the menu is scoped correctly out of the box
+    assert set(env.get("BRIDGE_ALLOWED_VENDORS", "").split(",")) == {
+        "openai", "anthropic", "gemini", "tripo", "bytedance"
+    }
+    # DALL·E + deprecated Seedance 1.x hidden by default
+    hidden = env.get("BRIDGE_HIDDEN_NODE_CLASSES", "")
+    for cls in ("OpenAIDalle2", "OpenAIDalle3", "ByteDanceTextToVideoNode"):
+        assert cls in hidden, f"{cls} should ship hidden"
+    # the removed per-class allowlist mechanism must NOT reappear in the template
+    assert "BRIDGE_ALLOWED_NODE_CLASSES" not in env

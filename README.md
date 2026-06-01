@@ -17,13 +17,15 @@ ComfyUI 启动加 `--comfy-api-base=http://127.0.0.1:8190` 后，所有 `comfy_a
 
 > **关键**：真正绕开 comfy.org 计费的是 `--comfy-api-base`（请求路由），不是菜单门控。请始终用带该参数的启动方式。
 
+> **环境要求**：ComfyUI 官方便携包，版本 ≥ 适配基线 **v0.22.3** 且支持 `--comfy-api-base`（太旧的版本不会路由）。下载：<https://github.com/comfyanonymous/ComfyUI/releases>（选 `ComfyUI_windows_portable_nvidia`）。
+
 ---
 
 ## 特性
 
 - **一把 key 多厂商**：OpenAI / Anthropic / Gemini / Tripo / ByteDance·Seedance，各自独立 base URL + key，按需启用。
 - **协议适配**：OpenAI `/v1/responses`、Anthropic 原生 `/v1/messages`（+ `x-api-key`）、Gemini `generateContent`、Tripo `/v2/openapi/task`、ByteDance/Seedance 视频 `/v1/video/generations` + Seedream 图 `/v1/images/generations`（Ark 方言↔网关方言翻译，含 1.x/2.0 视频与图生资产 base64 重写、virtual-library/资产/认证 shim），含图片 / 多模态引用重写。
-- **三层节点门控**（全部 `.env` 配置，不改代码）：厂商级隐藏 / 按类硬隐藏 / 按类灰显「未适配」。
+- **两层节点门控**（全部 `.env` 配置，不改代码）：厂商级隐藏 / 按类硬隐藏。支持就显示、不支持或不想要就隐藏，**无「未适配」灰显中间态**。
 - **Windows 开箱即用**：一键安装 `bootstrap.ps1`、体检 `doctor.ps1`、登录自启 + 每 5 分钟健康自愈的看门狗。
 - **零侵入**：不改 ComfyUI 源码，全部能力在并列的 custom_node + 独立代理进程里。
 
@@ -51,7 +53,7 @@ ComfyUI 启动加 `--comfy-api-base=http://127.0.0.1:8190` 后，所有 `comfy_a
 
 | 耦合维度 | bridge 侧位置 | 依赖 ComfyUI 的什么 | 漂移后果 |
 |---|---|---|---|
-| **节点类名** | `app/config.py` `DEFAULT_ALLOWED_NODE_CLASSES` | `comfy_api_nodes` 各节点 `node_id`（如 `ClaudeNode`/`OpenAIChatNode`/`GeminiNanoBanana2`/`ByteDance2TextToVideoNode`） | 改名 → 门控白名单失配，节点被误灰显/误隐藏 |
+| **节点类名** | `app/config.py` `DEFAULT_HIDDEN_NODE_CLASSES` / `.env` 黑名单 | `comfy_api_nodes` 各节点 `node_id`（如 `ClaudeNode`/`OpenAIChatNode`/`GeminiNanoBanana2`/`ByteDance2TextToVideoNode`） | 改名 → 黑名单/能力判定失配，节点被误隐藏 |
 | **请求字段路径** | 各 adapter `_rewrite_body` | 节点发出的 JSON 结构：Anthropic `messages[].content[].source.url`、Gemini `contents[].parts[].fileData.fileUri`、Tripo `body.file`/`body.files`、Seedance `content[].role` | 改 schema → 资产重写漏改，网关收到 `127.0.0.1` 内网 URL 而失败 |
 | **端点路径** | 各 adapter `handle` | 节点请求的 vendor path（`/v1/responses`、`/v1/messages`、`/v1beta/models/{model}:generateContent`、`/v2/openapi/task`、Ark `api/v3/...`） | 改路由段 → 命中 424「无 handler」/ 404 |
 | **门控 vendor 推导** | custom_node 服务端剪枝 | 节点 `python_module`（如 `nodes_bytedance` → vendor `bytedance`） | 改模块名 → 厂商门控失效 |
@@ -158,7 +160,6 @@ linux/restart-all.sh
 | `BRIDGE_GATING` | `on` | 节点门控总开关（`off` = 纯透传不裁剪菜单） |
 | `BRIDGE_CORS_ORIGINS` | `http://127.0.0.1:8188,http://localhost:8188` | CORS 允许来源 |
 | `BRIDGE_ALLOWED_VENDORS` | 见 `config.py` | 厂商白名单（逗号分隔，覆盖基线） |
-| `BRIDGE_ALLOWED_NODE_CLASSES` | 见 `config.py` | 类白名单；允许厂商但不在此的类灰显「未适配」 |
 | `BRIDGE_HIDDEN_NODE_CLASSES` | 空 | 类硬隐藏黑名单；从菜单彻底移除（改后需**重启 ComfyUI**） |
 | `BRIDGE_HTTP_TIMEOUT` | `300` | 上游读超时（秒）；同步出图模型（如 gpt-image-2）耗时长时调大 |
 | `BRIDGE_NO_PROXY` | 空 | 逗号分隔域名并入 `NO_PROXY`，让发往网关的请求绕过系统 HTTP(S) 代理/VPN（如 v2rayN，否则长连接被掐 ReadTimeout） |
@@ -173,13 +174,14 @@ linux/restart-all.sh
 
 > 只填要用的厂商；缺 key 的厂商节点返回 HTTP 424「未配置」，不影响其它。base URL 填 origin-root（OpenAI 会自动去重 `/v1`，Anthropic **不要**带 `/v1`）。
 
-### 三层节点门控
+### 两层节点门控
 
 | 层 | 配置 | 效果 | 生效方式 |
 |---|---|---|---|
-| 厂商隐藏 | `BRIDGE_ALLOWED_VENDORS` | 非白名单厂商节点从菜单移除（服务端剪枝） | 重启 ComfyUI |
-| 按类硬隐藏 | `BRIDGE_HIDDEN_NODE_CLASSES` | 指定类从菜单移除，优先级最高（服务端剪枝） | 重启 ComfyUI |
-| 按类灰显 | `BRIDGE_ALLOWED_NODE_CLASSES` | 允许厂商但不在白名单的类，画布上灰显「未适配」并禁用 | 前端硬刷新 |
+| 厂商隐藏 | `BRIDGE_ALLOWED_VENDORS` | 非白名单厂商节点从菜单移除（服务端剪枝 + 前端） | 重启 ComfyUI |
+| 按类硬隐藏 | `BRIDGE_HIDDEN_NODE_CLASSES` | 指定类从菜单移除，优先级最高（服务端剪枝 + 前端） | 重启 ComfyUI |
+
+> **无「未适配」灰显层**：节点要么显示要么隐藏。当前 backend 不支持的类由前端按 capability（`loaded_node_classes`）自动隐藏；不想要的类加进 `BRIDGE_HIDDEN_NODE_CLASSES`。
 
 > 改 `*_BASE_URL` / `*_API_KEY` 等后端配置只需**重启 bridge**，无需刷新前端。
 
@@ -248,7 +250,7 @@ comfy-bridge/
 │   └── errors.py             #   424 / vendor 错误
 ├── custom_nodes/comfy-bridge-gating/
 │   ├── __init__.py           #   服务端剪枝（厂商隐藏 + 按类硬隐藏）
-│   └── web/...js             #   前端灰显「未适配」
+│   └── web/...js             #   前端隐藏未授权/不支持的节点
 ├── windows/                  # 所有 Windows .bat/.ps1/.vbs 都在这（跨平台，不放根目录）
 │   ├── bootstrap.ps1         #   一键安装（幂等）
 │   ├── doctor.ps1            #   体检

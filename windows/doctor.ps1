@@ -68,7 +68,7 @@ $bridgeUp = $false
 try {
   $g = Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating -TimeoutSec 5
   $bridgeUp = $true
-  Ok ("bridge :8190 up (gating_enabled={0}, allowed={1}, hidden={2})" -f $g.gating_enabled, $g.allowed_node_classes.Count, $g.hidden_node_classes.Count)
+  Ok ("bridge :8190 up (gating_enabled={0}, vendors={1}, hidden={2})" -f $g.gating_enabled, $g.allowed_vendors.Count, $g.hidden_node_classes.Count)
 } catch { Bad "bridge :8190 not responding (Start-ScheduledTask -TaskName comfy-bridge)" }
 
 # A uv-created venv on Windows uses a trampoline python.exe that spawns the base python as

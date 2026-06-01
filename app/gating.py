@@ -1,12 +1,13 @@
-"""Gating endpoint (spec §6). Two-tier service-level allowlist:
-- allowed_vendors: vendors the bridge has adapters for. Nodes from other vendors get
+"""Gating endpoint (spec §6). Service-level vendor allowlist + class denylist:
+- allowed_vendors: vendors the bridge has adapters for. Nodes from other vendors are
   hidden entirely from the menu (~173 nodes out of 192 in upstream comfy_api_nodes).
-- allowed_node_classes: per-class allowlist for end-to-end-verified node classes within
-  an allowed vendor. Nodes whose vendor is allowed but class isn't get greyed "未适配".
+- hidden_node_classes: per-class denylist — specific classes of an allowed vendor to
+  hide outright (e.g. dall-e on a gpt-image-only gateway, or unwanted nodes). There is
+  no per-class allowlist / "未适配" grey state: a node is either shown or hidden.
 
 Both lists are POLICY/CONFIG, not code: the baseline defaults ship in config.py
-(DEFAULT_ALLOWED_VENDORS / DEFAULT_ALLOWED_NODE_CLASSES) and each deployment overrides
-them via .env (BRIDGE_ALLOWED_VENDORS / BRIDGE_ALLOWED_NODE_CLASSES, comma-separated) —
+(DEFAULT_ALLOWED_VENDORS / DEFAULT_HIDDEN_NODE_CLASSES) and each deployment overrides
+them via .env (BRIDGE_ALLOWED_VENDORS / BRIDGE_HIDDEN_NODE_CLASSES, comma-separated) —
 so enabling/disabling nodes never requires editing this file (and never conflicts on
 `git pull`). Vendor is derived client-side from each node's python_module
 (e.g. `comfy_api_nodes.nodes_openai` -> vendor "openai")."""
@@ -42,12 +43,11 @@ async def gating() -> dict:
             loaded_node_classes.update(backend_spec["supported_node_classes"])
 
     return {
-        # 既有 4 字段不动
+        # vendor allowlist + class denylist (no per-class allowlist / grey state)
         "gating_enabled": cfg.gating_enabled,
         "allowed_vendors": cfg.allowed_vendors,
-        "allowed_node_classes": cfg.allowed_node_classes,
         "hidden_node_classes": cfg.hidden_node_classes,
-        # 新增 3 字段
+        # backend capability authority (client hides classes not loaded)
         "loaded_route_keys": loaded_route_keys,
         "vendor_meta": vendor_meta,
         "loaded_node_classes": sorted(loaded_node_classes),
