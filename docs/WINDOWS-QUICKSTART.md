@@ -30,13 +30,13 @@ git clone https://github.com/ivanfuland/comfy-bridge.git
 # ② 跑一键安装（幂等，可重跑）
 powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\bootstrap.ps1
 
-# ③ 启动 ComfyUI
-#    双击 comfy-bridge\windows\start-comfyui.bat，浏览器开 http://127.0.0.1:8188
+# ③ 启动整套（bridge + ComfyUI）
+#    双击 comfy-bridge\windows\restart-all.bat，浏览器开 http://127.0.0.1:8188
 ```
 
 `bootstrap.ps1` 会自动：查前置 → 装 ComfyUI（下 ~2.6GB torch，等几分钟）→ 建 bridge 环境跑测试 → **问你网关 URL 和 key** 写 `.env` → 接好 custom_node → 注册自启 + 看门狗 → 启 bridge → 自检。
 
-> **三个双击入口都在 `comfy-bridge\windows\`**（跨平台 repo，Windows 的 .bat 都收在这）：`start-comfyui.bat`（启 ComfyUI）/ `start-bridge.bat`（改完 .env 重启 bridge）/ `watch-bridge-log.bat`（看流量）。嫌进目录麻烦可右键发送到桌面快捷方式。
+> **双击入口都在 `comfy-bridge\windows\`**（跨平台 repo，Windows 的 .bat 都收在这）：`restart-all.bat`（一键启动/重启整套 bridge + ComfyUI，并重载 .env）/ `watch-bridge-log.bat`（看流量）。嫌进目录麻烦可右键发送到桌面快捷方式。
 
 > 装完第一次启动 ComfyUI 后，**菜单没收敛就重启一次 ComfyUI**（节点剪枝在加载时跑）。
 
@@ -58,11 +58,11 @@ powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\doctor.ps1
 
 | 改了什么 | 怎么生效 |
 |---|---|
-| 换网关 / 换 key / 改 `.env` 的 URL·KEY 段 | **双击 `windows\start-bridge.bat`**（重启 bridge 重载 .env），节点重新 Queue 即生效，不用刷新 |
-| `.env` 里 `BRIDGE_HIDDEN_NODE_CLASSES`（硬隐藏节点）、装/删 custom_node | 先 `start-bridge.bat`，再 **双击 `start-comfyui.bat` 重启 ComfyUI**（剪枝在加载 custom_node 时跑） |
+| 换网关 / 换 key / 改 `.env` 的 URL·KEY 段 | **双击 `windows\restart-all.bat`**（重启 bridge 重载 .env + 重启 ComfyUI），节点重新 Queue 即生效 |
+| `.env` 里 `BRIDGE_HIDDEN_NODE_CLASSES`（硬隐藏节点）、装/删 custom_node | **双击 `windows\restart-all.bat`**（按 bridge→ComfyUI 顺序重启，剪枝在 ComfyUI 加载 custom_node 时用新值跑） |
 | `.env` 里 `BRIDGE_ALLOWED_NODE_CLASSES`（灰显未适配）、custom_node 的 `web\*.js` | ComfyUI 前端 **Ctrl+Shift+R 硬刷新** |
 
-> **改完 `.env` 一定要双击 `windows\start-bridge.bat`**——它做的是「停任务 → 清 8190 端口 → 起任务」的正确重启（`Stop-ScheduledTask` 不杀子进程，光 Stop+Start 会重载失败）。**别用 `start-bridge.ps1` 直接跑**：它有幂等守卫，见服务健康就退出、不重载。
+> **改完 `.env` 一定要双击 `windows\restart-all.bat`**——它做的是「停任务 → 清 8190 端口 → 起任务（重载 .env）→ 健康探测 → 重启 ComfyUI」的正确全栈重启（`Stop-ScheduledTask` 不杀子进程，光 Stop+Start 会重载失败；bridge 不健康会中止、不带病起 ComfyUI）。**别用 `start-bridge.ps1` 直接跑**：它有幂等守卫，见服务健康就退出、不重载。
 
 ---
 
@@ -70,16 +70,15 @@ powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\doctor.ps1
 
 | 操作 | 命令 / 做法（.bat 都在 `comfy-bridge\windows\`） |
 |---|---|
-| 启 ComfyUI | 双击 `windows\start-comfyui.bat`（:8188） |
-| 重启 bridge / 重载 .env | 双击 `windows\start-bridge.bat`（:8190） |
+| 启动 / 重启整套（重载 .env） | 双击 `windows\restart-all.bat`（bridge :8190 + ComfyUI :8188） |
 | 看 bridge 实时流量 | 双击 `windows\watch-bridge-log.bat`（关了不影响服务） |
 | bridge 进程 | **隐藏后台服务**（无窗口，关不掉，登录自启 + 看门狗自愈）；底层 `Start-/Stop-/Get-ScheduledTask -TaskName comfy-bridge` |
 | bridge 日志 | `comfy-bridge\logs\bridge.log`（每笔 input `→` / output `←` 都记，重启滚动到 `.1`） |
 | 体检 | `powershell -File comfy-bridge\windows\doctor.ps1` |
-| 升级 bridge | `cd comfy-bridge; git pull` → 双击 `windows\start-bridge.bat`（symlink 自动同步 custom_node） |
+| 升级 bridge | `cd comfy-bridge; git pull` → 双击 `windows\restart-all.bat`（symlink 自动同步 custom_node） |
 | 卸载自启 | `powershell -File comfy-bridge\windows\uninstall-task-scheduler.ps1` |
 
-> ⚠️ **护积分的是 `--comfy-api-base`，不是菜单收敛**。只用 `windows\start-comfyui.bat` 启动 ComfyUI（它固定带这个参数）；别用 `comfy launch` / ComfyUI Desktop 绕过，否则 api_node 会直连 comfy.org 扣积分。
+> ⚠️ **护积分的是 `--comfy-api-base`，不是菜单收敛**。只用 `windows\restart-all.bat` 启动 ComfyUI（它固定带这个参数）；别用 `comfy launch` / ComfyUI Desktop 绕过，否则 api_node 会直连 comfy.org 扣积分。
 > **bridge 没有自己的窗口**（隐藏服务），想看流量用 `watch-bridge-log.bat`，别去开 bridge 窗口（也开不出来，且会触发重启）。
 
 ---
@@ -93,9 +92,9 @@ powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\doctor.ps1
 | 菜单还显示全部/灰显没生效 | 看 §4：硬隐藏要重启 ComfyUI，灰显/JS 要硬刷新 |
 | Tripo 报 `data.status` 校验失败 | 已由 bridge 自动修复；确认 bridge 是最新版（`git pull`） |
 | 字节跳动/Seedance 节点不出现或灰显 | `BRIDGE_ALLOWED_VENDORS` 要含 **`bytedance`**（不是 `byteplus`，门控 vendor 名由节点模块推导）；改后**重启 ComfyUI**。2.0 那几个节点显示英文名是前端中文翻译没覆盖到，正常 |
-| 改了 .env 没生效 | 多半没重启 bridge，或重启没成功。**双击 `windows\start-bridge.bat`**（正确重启重载），看末尾打印 `gating=True` |
-| 节点报 401 / 弹「需要登录」 | 网关 key 失效（前端把上游 401 当未登录）。换有效 key 进 `.env`，双击 `start-bridge.bat`；`logs\bridge.log` 的 `← 401` 行有详情 |
+| 改了 .env 没生效 | 多半没重启 bridge，或重启没成功。**双击 `windows\restart-all.bat`**（正确重启重载），看末尾打印 `gating=True` |
+| 节点报 401 / 弹「需要登录」 | 网关 key 失效（前端把上游 401 当未登录）。换有效 key 进 `.env`，双击 `restart-all.bat`；`logs\bridge.log` 的 `← 401` 行有详情 |
 | 看着像「一直挂掉重启」/ 任务管理器两个 python | **多半是误会**：一个 bridge = 两个 `python.exe`（uv 跳板 + 子进程）属正常。真挂掉看 `doctor.ps1` / `:8190` owner 是否稳定 |
-| bridge 起不来 / 端口被占 | 双击 `windows\start-bridge.bat`（会清端口重启）；或看 `logs\bridge.log` |
+| bridge 起不来 / 端口被占 | 双击 `windows\restart-all.bat`（会清端口重启）；或看 `logs\bridge.log` |
 | 一切看着不对 | 先跑 `doctor.ps1`，按 FAIL 项处理 |
 | symlink 失败 | 开 Windows 开发者模式后重跑 bootstrap（或接受复制版） |
