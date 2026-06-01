@@ -96,6 +96,10 @@ app.registerExtension({
     const allowedVendors = new Set(gating.allowed_vendors || []);
     const allowedClasses = new Set(gating.allowed_node_classes || []);
     const hiddenClasses = new Set(gating.hidden_node_classes || []);
+    // backend capability authority (spec §4.4 v7): which node classes the
+    // currently-loaded backends actually support, + vendor reverse-lookup map.
+    const loadedNodeClasses = new Set(gating.loaded_node_classes || []);
+    const vendorMeta = gating.vendor_meta || {};
     let hidden = 0, greyed = 0, kept = 0;
     for (const [cls, { nodeType, nodeData }] of API_NODES.entries()) {
       // Per-class hard hide (denylist) wins over vendor allow: removes the class from
@@ -111,6 +115,21 @@ app.registerExtension({
         hidden++;
         continue;
       }
+
+      // ── 新增（spec §4.4 v7 + codex v6 P1-3）──
+      // loaded_node_classes 是 backend capability authority. 若 vendor 已声明
+      // 但当前 backend 不支持此 class (如 Linux 切 fal-ai 时 Seedance 1.x 4 节点)，
+      // hide. 这是叠加在 vendor allowlist 之上的 capability 硬约束.
+      const inVendorMeta = Object.values(vendorMeta).some(
+        (meta) => meta.python_module_segment === vendor
+      );
+      if (inVendorMeta && !loadedNodeClasses.has(cls)) {
+        hideClass(cls);
+        hidden++;
+        continue;
+      }
+      // ── 新增结束 ──
+
       if (!allowedClasses.has(cls)) {
         applyGreyOverride(nodeType);
         updateExistingInstances(app.graph, cls);
