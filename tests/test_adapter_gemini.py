@@ -130,6 +130,67 @@ def test_non_bridge_fileuri_passthrough(monkeypatch, tmp_path):
     assert "inlineData" not in part0
 
 
+@respx.mock
+def test_default_image_output_options_stripped(monkeypatch, tmp_path):
+    """ComfyUI always emits imageConfig.imageOutputOptions={"mimeType":"image/png"}
+    (pydantic default); Google AI Studio rejects the Vertex-only field. The redundant
+    default must be stripped (no-op: PNG is Google's default), while imageSize stays."""
+    captured = {}
+
+    def _resp(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"candidates": []})
+
+    respx.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent"
+    ).mock(side_effect=_resp)
+    c, _ = _client(monkeypatch, tmp_path)
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": "a little lion"}]}],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {"imageSize": "1K", "imageOutputOptions": {"mimeType": "image/png"}},
+        },
+    }
+    r = c.post("/proxy/vertexai/gemini/gemini-3.1-flash-image-preview", json=body)
+    assert r.status_code == 200
+    ic = captured["body"]["generationConfig"]["imageConfig"]
+    assert "imageOutputOptions" not in ic  # default stripped
+    assert ic["imageSize"] == "1K"  # real option preserved
+
+
+@respx.mock
+def test_non_default_image_output_options_preserved(monkeypatch, tmp_path):
+    """A genuine non-default request (jpeg / compressionQuality) is preserved so
+    upstreams that DO support the field (Vertex / leihuo) keep the user's intent."""
+    captured = {}
+
+    def _resp(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"candidates": []})
+
+    respx.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent"
+    ).mock(side_effect=_resp)
+    c, _ = _client(monkeypatch, tmp_path)
+    # Each case is non-default and must be preserved. The PNG+quality case isolates the
+    # compressionQuality guard (mimeType still default) so a broken quality guard can't
+    # hide behind the mimeType guard; the jpeg-only case isolates the mimeType guard.
+    cases = [
+        {"mimeType": "image/jpeg", "compressionQuality": 80},
+        {"mimeType": "image/png", "compressionQuality": 80},  # PNG but explicit quality
+        {"mimeType": "image/jpeg"},  # non-PNG, no quality
+    ]
+    for opts in cases:
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": "a little lion"}]}],
+            "generationConfig": {"imageConfig": {"imageSize": "1K", "imageOutputOptions": dict(opts)}},
+        }
+        r = c.post("/proxy/vertexai/gemini/gemini-3.1-flash-image-preview", json=body)
+        assert r.status_code == 200
+        assert captured["body"]["generationConfig"]["imageConfig"]["imageOutputOptions"] == opts
+
+
 def test_missing_key_returns_424(monkeypatch, tmp_path):
     c, _ = _client(monkeypatch, tmp_path, GEMINI_API_KEY="")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
