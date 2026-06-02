@@ -39,55 +39,17 @@ _PROVIDER_DEFAULT_BASE = {
     "byteplus": "https://ai.leihuo.netease.com",
 }
 
-# ── Gating allowlist defaults (policy baseline; override per-deployment via .env) ──
-# Tier 1: vendors the bridge has adapters for. Tier 2: e2e-verified node classes within
-# an allowed vendor (others of an allowed vendor are greyed "未适配" in the menu).
-# Override with BRIDGE_ALLOWED_VENDORS / BRIDGE_ALLOWED_NODE_CLASSES (comma-separated) in
-# .env — keeps node enable/disable out of code (no git-pull conflicts).
+# ── Gating defaults (policy baseline; override per-deployment via .env) ──
+# Vendor allowlist: vendors the bridge has adapters for; nodes from any other vendor are
+# hidden from the menu. Override with BRIDGE_ALLOWED_VENDORS (comma-separated) in .env —
+# keeps node enable/disable out of code (no git-pull conflicts).
 DEFAULT_ALLOWED_VENDORS = ["openai", "anthropic", "gemini", "tripo", "bytedance"]
-# Per-class hard hide (denylist): classes of an ALLOWED vendor that should be removed
-# from the menu entirely (like a hidden vendor), not just greyed "未适配". Use for nodes
-# the gateway can't serve at all (e.g. dall-e on a gateway with only gpt-image). Empty by
-# default; set BRIDGE_HIDDEN_NODE_CLASSES in .env.
+# Per-class hard hide (denylist): classes of an ALLOWED vendor to remove from the menu
+# entirely. Use for nodes the gateway can't serve at all (e.g. dall-e on a gpt-image-only
+# gateway) or simply unwanted nodes. Empty by default; set BRIDGE_HIDDEN_NODE_CLASSES in
+# .env. (There is no per-class allowlist / "未适配" grey state: a node is either shown or
+# hidden — capability-unsupported classes are hidden automatically by the gating node.)
 DEFAULT_HIDDEN_NODE_CLASSES: list[str] = []
-DEFAULT_ALLOWED_NODE_CLASSES = [
-    # Anthropic — vision via base64 rewrite
-    "ClaudeNode",
-    # OpenAI — text via /v1/responses + image via /v1/images/{generations,edits}
-    "OpenAIChatNode",
-    "OpenAIGPTImage1",
-    "OpenAIGPTImageNodeV2",
-    "OpenAIDalle2",
-    "OpenAIDalle3",
-    # Gemini — generateContent (text + multimodal via fileData→inlineData)
-    "GeminiNode",
-    "GeminiImageNode",
-    "GeminiImage2Node",
-    "GeminiNanoBanana2",
-    "GeminiNanoBanana2V2",
-    # Tripo — image_to_model + multiview (other task types are e2e-verified too but
-    # enabled via .env override per-deployment, not baked into this baseline)
-    "TripoImageToModelNode",
-    "TripoMultiviewToModelNode",
-    # ByteDance/Seedance — 10 generation nodes served via the byteplus adapter.
-    # NB: gating derives this vendor as "bytedance" (from python_module
-    # nodes_bytedance), distinct from the route vendor segments byteplus/
-    # byteplus-seedance2/seedance the adapter actually registers.
-    "ByteDanceImageNode",
-    "ByteDanceSeedreamNode",
-    "ByteDanceSeedreamNodeV2",
-    "ByteDanceTextToVideoNode",
-    "ByteDanceImageToVideoNode",
-    "ByteDanceFirstLastFrameNode",
-    "ByteDanceImageReferenceNode",
-    "ByteDance2TextToVideoNode",
-    "ByteDance2FirstLastFrameNode",
-    "ByteDance2ReferenceNode",
-    # Asset-helper nodes (not is_api_node): enabled so the optional
-    # /proxy/seedance/assets + visual-validate shims are reachable end-to-end.
-    "ByteDanceCreateImageAsset",
-    "ByteDanceCreateVideoAsset",
-]
 
 
 def _csv_env(name: str, default: list[str]) -> list[str]:
@@ -109,7 +71,6 @@ class Config:
     cors_origins: list[str]
     anthropic_version: str
     allowed_vendors: list[str]
-    allowed_node_classes: list[str]
     hidden_node_classes: list[str]
 
     def require_key(self, provider: str) -> str:
@@ -148,6 +109,5 @@ def load_config() -> Config:
         cors_origins=origins,
         anthropic_version=os.getenv("ANTHROPIC_VERSION", "2023-06-01"),
         allowed_vendors=_csv_env("BRIDGE_ALLOWED_VENDORS", DEFAULT_ALLOWED_VENDORS),
-        allowed_node_classes=_csv_env("BRIDGE_ALLOWED_NODE_CLASSES", DEFAULT_ALLOWED_NODE_CLASSES),
         hidden_node_classes=_csv_env("BRIDGE_HIDDEN_NODE_CLASSES", DEFAULT_HIDDEN_NODE_CLASSES),
     )

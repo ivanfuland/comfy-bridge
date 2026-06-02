@@ -1,0 +1,102 @@
+name: Release Portable Kit
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-kit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps (pinned)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" -c packaging/constraints-build.txt
+          pip install pyinstaller -c packaging/constraints-build.txt
+
+      - name: Run tests (gate release on green)   # Codex plan-review #4
+        run: pytest -q
+
+      - name: Build exe (onedir)
+        run: pyinstaller bridge.spec --noconfirm
+
+      - name: Smoke test frozen exe (REAL kit layout)   # Codex plan-review #3
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force kittest | Out-Null
+          Copy-Item dist/bridge kittest/bridge -Recurse
+          Copy-Item packaging/.env.example.kit kittest/.env   # .env at kit root, NOT inside bridge\
+          $p = Start-Process kittest/bridge/bridge.exe -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..15) {
+              Start-Sleep 2
+              try {
+                if ((Invoke-RestMethod http://127.0.0.1:8190/comfy-bridge/gating -TimeoutSec 3).gating_enabled) { $ok = $true; break }
+              } catch {}
+            }
+            if (-not $ok) { throw "frozen exe smoke failed: gating unhealthy (missing dep, or walk-up did not find root .env)" }
+            Write-Host "smoke OK (exe located root .env from bridge\)"
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force kittest -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify gating node files present
+        shell: pwsh
+        run: |
+          foreach ($f in @("custom_nodes/comfy-bridge-gating/__init__.py",
+                           "custom_nodes/comfy-bridge-gating/web/comfy-bridge-gating.js")) {
+            if (-not (Test-Path $f)) { throw "missing $f" }
+          }
+
+      - name: Assemble kit
+        shell: pwsh
+        run: |
+          $kit = "comfy-bridge-kit"
+          New-Item -ItemType Directory -Force -Path $kit | Out-Null
+          Copy-Item dist/bridge "$kit/bridge" -Recurse
+          Copy-Item custom_nodes/comfy-bridge-gating "$kit/comfy-bridge-gating" -Recurse
+          Copy-Item packaging/.env.example.kit "$kit/.env.example"
+          Copy-Item packaging/install.bat "$kit/"
+          Copy-Item packaging/_patch_launcher.ps1 "$kit/"
+          Copy-Item packaging/start-bridge.bat "$kit/"
+          Copy-Item packaging/uninstall.bat "$kit/"
+          Copy-Item "packaging/接入说明.txt" "$kit/"
+          $zip = "comfy-bridge-kit-$($env:GITHUB_REF_NAME).zip"
+          Compress-Archive -Path "$kit/*" -DestinationPath $zip -Force
+          echo "ZIP=$zip" >> $env:GITHUB_ENV
+
+      - name: Verify zip structure   # Codex plan-review #10
+        shell: pwsh
+        run: |
+          Expand-Archive -Path $env:ZIP -DestinationPath ziptest -Force
+          $need = @(
+            "ziptest/bridge/bridge.exe",
+            "ziptest/comfy-bridge-gating/__init__.py",
+            "ziptest/comfy-bridge-gating/web/comfy-bridge-gating.js",
+            "ziptest/.env.example",
+            "ziptest/install.bat",
+            "ziptest/_patch_launcher.ps1",
+            "ziptest/start-bridge.bat",
+            "ziptest/uninstall.bat",
+            "ziptest/接入说明.txt"
+          )
+          foreach ($f in $need) { if (-not (Test-Path -LiteralPath $f)) { throw "zip missing $f" } }
+          Write-Host "zip structure OK"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true

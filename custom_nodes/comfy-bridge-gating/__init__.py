@@ -1,7 +1,8 @@
 """comfy-bridge gating extension. Two interventions:
 
-1) Web extension (web/comfy-bridge-gating.js) -- class-tier grey [未适配] for
-   api_nodes whose vendor is allowed but class isn't on the per-class allowlist.
+1) Web extension (web/comfy-bridge-gating.js) -- hides (removes from the menu)
+   api_nodes whose vendor isn't allowed, that are on the hidden denylist, or that
+   the loaded backend doesn't support. There is no grey "未适配" state.
 
 2) Python side (this file) -- at custom_nodes load time, remove disallowed-
    vendor api_node classes from nodes.NODE_CLASS_MAPPINGS so the new Vue
@@ -10,8 +11,8 @@
    has already populated NODE_CLASS_MAPPINGS by the time custom_nodes load
    (see ComfyUI/nodes.py:init_extra_nodes).
 
-Single source of truth for the allowlist: http://127.0.0.1:8190/comfy-bridge/gating
-(returns {gating_enabled, allowed_vendors, allowed_node_classes}). On bridge
+Single source of truth: http://127.0.0.1:8190/comfy-bridge/gating
+(returns {gating_enabled, allowed_vendors, hidden_node_classes, ...}). On bridge
 unreachable: fail-open -- no pruning (don't lock the user out)."""
 import json
 import logging
@@ -71,6 +72,16 @@ def _prune_disallowed_api_nodes():
     # panel (reads /object_info) loses them too -- the web JS hideClass only touches the
     # LiteGraph registry, which the new node-library panel does NOT read from.
     hidden_classes = set(gating.get("hidden_node_classes", []))
+    # Capability authority (Codex H-1): classes the loaded backends actually support, plus the
+    # set of vendors that have a registered backend. An allowed-vendor class the loaded backend
+    # does NOT support is hidden server-side too (matches web/comfy-bridge-gating.js), so the Vue
+    # "合作伙伴节点" panel (reads /object_info from NODE_CLASS_MAPPINGS) loses it as well.
+    # Guard: skip capability hiding when loaded_node_classes is empty (e.g. adapters failed to
+    # load) so we never hide an allowed vendor's whole node set.
+    loaded_node_classes = set(gating.get("loaded_node_classes", []))
+    vendor_meta = gating.get("vendor_meta", {}) or {}
+    backend_vendors = {m.get("python_module_segment") for m in vendor_meta.values() if isinstance(m, dict)}
+    apply_capability = bool(loaded_node_classes)
     try:
         import nodes
     except Exception as e:
@@ -78,6 +89,7 @@ def _prune_disallowed_api_nodes():
         return
     removed = 0
     removed_hidden = 0
+    removed_capability = 0
     kept_vendors = set()
     for name in list(nodes.NODE_CLASS_MAPPINGS.keys()):
         cls = nodes.NODE_CLASS_MAPPINGS[name]
@@ -92,14 +104,21 @@ def _prune_disallowed_api_nodes():
             removed_hidden += 1
             continue
         if vendor in allowed_vendors:
+            # capability: vendor has a backend but the loaded backend doesn't support this class
+            if apply_capability and vendor in backend_vendors and name not in loaded_node_classes:
+                del nodes.NODE_CLASS_MAPPINGS[name]
+                nodes.NODE_DISPLAY_NAME_MAPPINGS.pop(name, None)
+                removed_capability += 1
+                continue
             kept_vendors.add(vendor)
             continue
         del nodes.NODE_CLASS_MAPPINGS[name]
         nodes.NODE_DISPLAY_NAME_MAPPINGS.pop(name, None)
         removed += 1
     _log.info(
-        f"pruned {removed} api_node classes from disallowed vendors "
-        f"+ {removed_hidden} hard-hidden classes (kept vendors: {sorted(kept_vendors)})"
+        f"pruned {removed} disallowed-vendor + {removed_hidden} hard-hidden "
+        f"+ {removed_capability} backend-unsupported api_node classes "
+        f"(kept vendors: {sorted(kept_vendors)})"
     )
 
 
