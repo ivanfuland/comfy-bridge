@@ -4,6 +4,8 @@ ComfyUI + comfy-bridge 在 Windows 上的傻瓜安装。让 ComfyUI 网页里的
 
 > 详细原理 / 踩坑见 Obsidian 笔记《comfy-bridge Windows 迁移实战》。本页只讲「怎么装、怎么用」。
 
+> **只是想把它发给别人用？** 不用 clone / 装环境 —— 见 [README 的「便携套件」](../README.md)：打包成绿色免装的 exe 套件，对方装好 ComfyUI 便携包即可接入，或直接从 [Releases](../../releases) 下成品。本页是**自己运维**的开发者装法。
+
 ---
 
 ## 1. 前置条件（装之前确认）
@@ -60,7 +62,7 @@ powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\doctor.ps1
 |---|---|
 | 换网关 / 换 key / 改 `.env` 的 URL·KEY 段 | **双击 `windows\restart-all.bat`**（重启 bridge 重载 .env + 重启 ComfyUI），节点重新 Queue 即生效 |
 | `.env` 里 `BRIDGE_HIDDEN_NODE_CLASSES`（硬隐藏节点）、装/删 custom_node | **双击 `windows\restart-all.bat`**（按 bridge→ComfyUI 顺序重启，剪枝在 ComfyUI 加载 custom_node 时用新值跑） |
-| `.env` 里 `BRIDGE_ALLOWED_NODE_CLASSES`（灰显未适配）、custom_node 的 `web\*.js` | ComfyUI 前端 **Ctrl+Shift+R 硬刷新** |
+| custom_node 的 `web\*.js`（前端隐藏逻辑） | ComfyUI 前端 **Ctrl+Shift+R 硬刷新** |
 
 > **改完 `.env` 一定要双击 `windows\restart-all.bat`**——它做的是「停任务 → 清 8190 端口 → 起任务（重载 .env）→ 健康探测 → 重启 ComfyUI」的正确全栈重启（`Stop-ScheduledTask` 不杀子进程，光 Stop+Start 会重载失败；bridge 不健康会中止、不带病起 ComfyUI）。**别用 `start-bridge.ps1` 直接跑**：它有幂等守卫，见服务健康就退出、不重载。
 
@@ -89,9 +91,9 @@ powershell -ExecutionPolicy Bypass -File comfy-bridge\windows\doctor.ps1
 |---|---|
 | 节点报 `model_not_found` | 网关没这个模型。换网关支持的模型名（如出图用 `gpt-image-2`，别用 dall-e） |
 | 节点报 424 `未配置` | `.env` 里对应厂商的 KEY 空。填上，重启 bridge |
-| 菜单还显示全部/灰显没生效 | 看 §4：硬隐藏要重启 ComfyUI，灰显/JS 要硬刷新 |
+| 菜单还显示全部 / 改了不生效 | 看 §4：硬隐藏（黑名单 + 能力判定）要重启 ComfyUI，前端 `.js` 改动要硬刷新 |
 | Tripo 报 `data.status` 校验失败 | 已由 bridge 自动修复；确认 bridge 是最新版（`git pull`） |
-| 字节跳动/Seedance 节点不出现或灰显 | `BRIDGE_ALLOWED_VENDORS` 要含 **`bytedance`**（不是 `byteplus`，门控 vendor 名由节点模块推导）；改后**重启 ComfyUI**。2.0 那几个节点显示英文名是前端中文翻译没覆盖到，正常 |
+| 字节跳动/Seedance 节点不出现 | `BRIDGE_ALLOWED_VENDORS` 要含 **`bytedance`**（不是 `byteplus`，门控 vendor 名由节点模块推导）；改后**重启 ComfyUI**。2.0 那几个节点显示英文名是前端中文翻译没覆盖到，正常 |
 | 改了 .env 没生效 | 多半没重启 bridge，或重启没成功。**双击 `windows\restart-all.bat`**（正确重启重载），看末尾打印 `gating=True` |
 | 节点报 401 / 弹「需要登录」 | 网关 key 失效（前端把上游 401 当未登录）。换有效 key 进 `.env`，双击 `restart-all.bat`；`logs\bridge.log` 的 `← 401` 行有详情 |
 | 看着像「一直挂掉重启」/ 任务管理器两个 python | **多半是误会**：一个 bridge = 两个 `python.exe`（uv 跳板 + 子进程）属正常。真挂掉看 `doctor.ps1` / `:8190` owner 是否稳定 |
