@@ -40,6 +40,15 @@ def main() -> None:
     log_io = os.getenv("BRIDGE_LOG_IO", "on")
     print(f"[bridge] config from {os.path.join(base, '.env')} | host={host} port={port} log_io={log_io}")
 
+    # Port guard (Codex L-2): the gating custom node and the ComfyUI launcher (--comfy-api-base)
+    # are hardcoded to 8190. A different BRIDGE_PORT silently breaks ComfyUI routing/gating.
+    if port != 8190:
+        sys.stderr.write(
+            f"[bridge] WARNING: BRIDGE_PORT={port}, but the gating node and the ComfyUI launcher "
+            "(--comfy-api-base) are hardcoded to 8190 -- ComfyUI routing/gating will NOT work on a "
+            "different port unless you change those too. Recommended: keep 8190.\n"
+        )
+
     import logging
     import uvicorn
     from app.main import app
@@ -52,8 +61,9 @@ def main() -> None:
         _h.setFormatter(logging.Formatter("[bridge] %(message)s"))
     bar = "=" * 64
     print(bar)
-    print(f"[bridge] READY on http://{host}:{port}  --  this window IS the running service.")
+    print(f"[bridge] starting on http://{host}:{port}  --  this window IS the running service.")
     print("[bridge] The lines below are NORMAL startup logs, NOT errors.")
+    print("[bridge] When you see 'Uvicorn running on ...' below, the bridge is ready.")
     print("[bridge] Keep this window OPEN, then start ComfyUI via run_nvidia_gpu_bridge.bat.")
     print(bar)
     sys.stdout.flush()  # ensure the banner shows immediately, even when stdout is buffered

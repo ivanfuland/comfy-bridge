@@ -72,6 +72,16 @@ def _prune_disallowed_api_nodes():
     # panel (reads /object_info) loses them too -- the web JS hideClass only touches the
     # LiteGraph registry, which the new node-library panel does NOT read from.
     hidden_classes = set(gating.get("hidden_node_classes", []))
+    # Capability authority (Codex H-1): classes the loaded backends actually support, plus the
+    # set of vendors that have a registered backend. An allowed-vendor class the loaded backend
+    # does NOT support is hidden server-side too (matches web/comfy-bridge-gating.js), so the Vue
+    # "合作伙伴节点" panel (reads /object_info from NODE_CLASS_MAPPINGS) loses it as well.
+    # Guard: skip capability hiding when loaded_node_classes is empty (e.g. adapters failed to
+    # load) so we never hide an allowed vendor's whole node set.
+    loaded_node_classes = set(gating.get("loaded_node_classes", []))
+    vendor_meta = gating.get("vendor_meta", {}) or {}
+    backend_vendors = {m.get("python_module_segment") for m in vendor_meta.values() if isinstance(m, dict)}
+    apply_capability = bool(loaded_node_classes)
     try:
         import nodes
     except Exception as e:
@@ -79,6 +89,7 @@ def _prune_disallowed_api_nodes():
         return
     removed = 0
     removed_hidden = 0
+    removed_capability = 0
     kept_vendors = set()
     for name in list(nodes.NODE_CLASS_MAPPINGS.keys()):
         cls = nodes.NODE_CLASS_MAPPINGS[name]
@@ -93,14 +104,21 @@ def _prune_disallowed_api_nodes():
             removed_hidden += 1
             continue
         if vendor in allowed_vendors:
+            # capability: vendor has a backend but the loaded backend doesn't support this class
+            if apply_capability and vendor in backend_vendors and name not in loaded_node_classes:
+                del nodes.NODE_CLASS_MAPPINGS[name]
+                nodes.NODE_DISPLAY_NAME_MAPPINGS.pop(name, None)
+                removed_capability += 1
+                continue
             kept_vendors.add(vendor)
             continue
         del nodes.NODE_CLASS_MAPPINGS[name]
         nodes.NODE_DISPLAY_NAME_MAPPINGS.pop(name, None)
         removed += 1
     _log.info(
-        f"pruned {removed} api_node classes from disallowed vendors "
-        f"+ {removed_hidden} hard-hidden classes (kept vendors: {sorted(kept_vendors)})"
+        f"pruned {removed} disallowed-vendor + {removed_hidden} hard-hidden "
+        f"+ {removed_capability} backend-unsupported api_node classes "
+        f"(kept vendors: {sorted(kept_vendors)})"
     )
 
 
