@@ -28,6 +28,7 @@ ComfyUI 启动加 `--comfy-api-base=http://127.0.0.1:8190` 后，所有 `comfy_a
 - **两层节点门控**（全部 `.env` 配置，不改代码）：厂商级隐藏 / 按类硬隐藏。支持就显示、不支持或不想要就隐藏，**无「未适配」灰显中间态**。
 - **Windows 开箱即用**：一键安装 `bootstrap.ps1`、体检 `doctor.ps1`、登录自启 + 每 5 分钟健康自愈的看门狗。
 - **零侵入**：不改 ComfyUI 源码，全部能力在并列的 custom_node + 独立代理进程里。
+- **便携套件分发**：可打包成绿色免装的 Windows exe 套件给别人用（对方装好 ComfyUI 便携包即接入、用自己的 key），`git tag` 即自动构建并发布到 GitHub Releases。见下文「便携套件」。
 
 ---
 
@@ -150,6 +151,31 @@ linux/restart-all.sh
 
 ---
 
+## 便携套件（打包分发给别人）
+
+上面两种是**自己运维**的装法（clone + venv）。如果要**给别人用**——对方不装 Python、只有一份 ComfyUI 官方便携包——用便携套件：把 bridge 打包成绿色免装的 `bridge.exe` + 接入脚本，对方解压双击即可。
+
+**对方拿到套件后（三步）：**
+
+1. 编辑 `.env` 填自己的网关 key
+2. 双击 `install.bat`，指向自己的 ComfyUI 便携包 —— 装 gating 节点 + 生成带 `--comfy-api-base` 的兄弟启动器 `run_nvidia_gpu_bridge.bat`（官方 `run_nvidia_gpu.bat` 不动）
+3. 双击 `start-bridge.bat` 起 bridge（会先释放 8190）→ 用 `run_nvidia_gpu_bridge.bat` 启动 ComfyUI
+
+**出包（两种，同一套流程）：**
+
+| 方式 | 怎么做 | 产物 |
+|---|---|---|
+| **本地一键** | 双击 `packaging\build-kit.bat`（或 `powershell -File packaging\build-kit.ps1 [-Version vX]`） | `comfy-bridge-kit-vX.zip` |
+| **CI 自动发版** | `git tag v0.1.0 && git push origin v0.1.0` → GitHub Actions（windows-latest）构建 + pytest + 冻结冒烟 + 组装 + zip 校验 + 发布 | 自动挂到 [Releases](../../releases) |
+
+底层都是：PyInstaller onedir 出 `bridge.exe`（冻结入口 `run.py`，无 torch ~20MB）→ 组装套件 → 按真实布局冒烟 → zip。设计/实现细节见控制面 `docs/projects/comfyui/{specs,plans}/`。
+
+> ⚠️ **分发脚本铁律（套件里已规避）**：所有 `.bat` 和被 PowerShell 5.1 跑的 `.ps1` 一律**纯 ASCII + CRLF**——中文 + `chcp` 在 GBK 控制台会乱码/闪退。中文只放进**不执行**的 `接入说明.txt`（加 BOM）；`.env` 不能加 BOM（python-dotenv 解析）。
+>
+> ⚠️ **对方的 ComfyUI 版本**：便携套件的 adapter 同样按下文「版本兼容性」的基线写，优先给对方与基线一致的便携包；`install.bat` 会探测目标 ComfyUI 是否认 `--comfy-api-base`，不认会告警。
+
+---
+
 ## 配置（`.env`）
 
 | 变量 | 默认 | 说明 |
@@ -266,7 +292,12 @@ comfy-bridge/
 ├── systemd/
 │   ├── comfy-bridge.service  #   bridge（:8190，EnvironmentFile=.env）
 │   └── comfyui.service       #   ComfyUI（:8188，ExecStart 带 --comfy-api-base=:8190）
-├── tests/                    # pytest（60）
+├── tests/                    # pytest（200+）
+├── run.py                    # PyInstaller 冻结入口（便携 exe，向上找 .env）
+├── bridge.spec               # PyInstaller onedir 配方
+├── packaging/                # 便携套件：install/start/uninstall.bat + _patch_launcher.ps1
+│                             #   + .env.example.kit + build-kit.bat/.ps1 + 接入说明.txt + constraints-build.txt
+├── .github/workflows/        # ci.yml（pytest）+ release.yml（tag v* → 构建并发布到 Releases）
 ├── docs/WINDOWS-QUICKSTART.md
 ├── .env.example
 ├── pyproject.toml
