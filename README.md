@@ -187,6 +187,20 @@ linux/restart-all.sh
 
 > **ByteDance/Seedance 门控小坑**：`BRIDGE_ALLOWED_VENDORS` 里写的是 **`bytedance`**（门控 vendor 由节点 `python_module=nodes_bytedance` 推导），而 adapter 注册的路由段是 `byteplus`/`byteplus-seedance2`/`seedance`（来自端点路径）—— 两者名字不同，别混。
 
+### 节点隐藏（gating）启动 invariant
+
+后端剪枝由 ComfyUI 自定义节点 `comfy-bridge-gating` 在加载时执行，依赖：
+1. ComfyUI 已加载内置 api nodes，**且**
+2. 已加载 `comfy-bridge-gating` 插件。
+
+因此**启用 api nodes 时不要用 `--disable-all-custom-nodes`**——那会加载 api nodes 却跳过 custom_nodes，使后端隐藏失效。若必须禁用 custom_nodes，则同时加 `--disable-api-nodes`，或用 ComfyUI 白名单只放行 `comfy-bridge-gating`。
+
+gating 节点读 ComfyUI 进程的环境变量：
+- `BRIDGE_GATING_URL`（默认 `http://127.0.0.1:8190/comfy-bridge/gating`）：向 bridge 拉取门控规则的接口地址。
+- `BRIDGE_GATING_STARTUP_TIMEOUT`（默认 `180`，单位秒；`0` = 无限阻塞）：启动时等待 bridge 就绪的超时。**超时后 fail-closed——删除全部 api 节点**，防止 api nodes 在 bridge 未就绪时裸露。
+
+> **正确启动顺序**：先起 bridge（`:8190` 就绪）再起 ComfyUI。`restart-all.bat`（Windows）/ `restart-all.sh`（Linux）已按此顺序执行，并在健康探测通过后才继续。
+
 ---
 
 ## 自测
