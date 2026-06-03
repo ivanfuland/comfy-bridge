@@ -57,18 +57,22 @@ def _run():
     status, gating = _core.fetch_gating_blocking(
         _http_fetch, timeout, clock=time.monotonic, sleep=time.sleep)
 
-    if status == "timeout":
-        _log.warning("无法连接 gating %s（%ss 超时）→ fail-closed：删除全部 comfy_api_nodes 节点",
-                     _GATING_URL, timeout)
+    action = _core.classify_payload(status, gating)
+    if action == "fail_closed":
+        _log.warning("gating 不可用/ payload 畸形（status=%s）→ fail-closed：删除全部 comfy_api_nodes", status)
         removed = _core.fail_closed_prune(mappings, display, cls_meta=_cls_meta_min)
         _log.warning("fail-closed 删除 %d 个 comfy_api_nodes 节点", len(removed))
         return
-
-    if not gating.get("gating_enabled"):
+    if action == "skip":
         _log.info("gating disabled — no pruning")
         return
-
-    removed = _core.prune(mappings, display, gating, cls_meta=_cls_meta)
+    try:
+        removed = _core.prune(mappings, display, gating, cls_meta=_cls_meta)
+    except Exception as e:
+        _log.warning("prune 异常 %s → fail-closed", e)
+        removed = _core.fail_closed_prune(mappings, display, cls_meta=_cls_meta_min)
+        _log.warning("fail-closed 删除 %d 个 comfy_api_nodes 节点", len(removed))
+        return
     _log.info("gating 剪枝完成：删除 %d 个节点（allowed=%s, loaded_segments=%s）",
               len(removed), gating.get("allowed_vendors"), gating.get("loaded_segments"))
 

@@ -2,6 +2,7 @@
 __init__.py import 本模块并在 import 期调用 prune/fail_closed_prune。
 本模块不 import `nodes`、不读环境、不发请求。"""
 import logging
+import math
 
 _log = logging.getLogger("comfy-bridge-gating")
 
@@ -152,7 +153,9 @@ def reaches_symbols(module_source, entry_name, symbols, max_depth=3, class_name=
         return True
 
     # 收集模块级函数（含类内方法，后者可能覆盖同名模块级函数，但 helper 跟踪仍需）
-    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    # 同时收集 async def（AsyncFunctionDef）以支持 async def execute（Codex 收尾审 #2）
+    funcs = {n.name: n for n in ast.walk(tree)
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
     # 若指定 class_name，优先在目标类体内查找 entry_name（唯一性保证）
     entry = None
@@ -160,7 +163,7 @@ def reaches_symbols(module_source, entry_name, symbols, max_depth=3, class_name=
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef) and node.name == class_name:
                 for item in ast.walk(node):
-                    if isinstance(item, ast.FunctionDef) and item.name == entry_name:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == entry_name:
                         entry = item
                         break
                 break
@@ -191,15 +194,35 @@ def reaches_symbols(module_source, entry_name, symbols, max_depth=3, class_name=
     return follows(entry, 0) if entry else hits(tree)
 
 
+def classify_payload(status, gating):
+    """决定动作：'fail_closed' | 'skip' | 'prune'。
+    畸形/无效 schema 一律 fail_closed（不信任），仅显式 gating_enabled=False 才 skip（用户主动关）。
+    （Codex 收尾审 #1：恶意/畸形 payload 不得 fail-open）。"""
+    if status != "ok":
+        return "fail_closed"
+    if not isinstance(gating, dict):
+        return "fail_closed"
+    enabled = gating.get("gating_enabled")
+    if not isinstance(enabled, bool):        # 缺失 / 非布尔 → schema 偏差 → fail_closed
+        return "fail_closed"
+    if enabled is False:                     # 显式关闭 → 不剪
+        return "skip"
+    return "prune"
+
+
 def parse_timeout(raw, default=180.0):
-    """解析 BRIDGE_GATING_STARTUP_TIMEOUT；畸形值回退默认 + warn（Codex 最终审 #2：不可让 import 崩→fail-open）。"""
+    """解析 BRIDGE_GATING_STARTUP_TIMEOUT；畸形/非有限/负值回退默认（Codex 收尾审 #3）。0=无限等待。"""
     if raw is None:
         return default
     try:
-        return float(raw)
+        v = float(str(raw).strip())
     except (TypeError, ValueError):
         _log.warning("BRIDGE_GATING_STARTUP_TIMEOUT 无效值 %r，回退默认 %s", raw, default)
         return default
+    if not math.isfinite(v) or v < 0:
+        _log.warning("BRIDGE_GATING_STARTUP_TIMEOUT 非有限/负值 %r，回退默认 %s", raw, default)
+        return default
+    return v
 
 
 def fetch_gating_blocking(fetch_fn, timeout_s, *, clock, sleep, log_every_s=10.0):

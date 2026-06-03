@@ -196,6 +196,40 @@ def test_parse_timeout_invalid_falls_back():
     assert core.parse_timeout("") == 180.0
 
 
+def test_parse_timeout_non_finite_and_negative():
+    """非有限/负值回退默认（Codex 收尾审 #3）。"""
+    assert core.parse_timeout("nan") == 180.0
+    assert core.parse_timeout("inf") == 180.0
+    assert core.parse_timeout("-5") == 180.0
+    assert core.parse_timeout("  90  ") == 90.0
+
+
+def test_classify_payload():
+    """payload 分类器：畸形→fail_closed，显式 False→skip，True→prune（Codex 收尾审 #1）。"""
+    assert core.classify_payload("timeout", None) == "fail_closed"
+    assert core.classify_payload("ok", []) == "fail_closed"
+    assert core.classify_payload("ok", "x") == "fail_closed"
+    assert core.classify_payload("ok", {}) == "fail_closed"                    # 缺 gating_enabled
+    assert core.classify_payload("ok", {"gating_enabled": "yes"}) == "fail_closed"  # 非 bool
+    assert core.classify_payload("ok", {"gating_enabled": False}) == "skip"
+    assert core.classify_payload("ok", {"gating_enabled": True}) == "prune"
+
+
+def test_reaches_symbols_async_entry():
+    """async def execute 应被 oracle 识别（Codex 收尾审 #2）。"""
+    src = "async def execute(self, x):\n    return await sync_op(x)\n"
+    assert core.reaches_symbols(src, "execute", {"sync_op"}) is True
+    src2 = "async def execute(self, x):\n    return x + 1\n"
+    assert core.reaches_symbols(src2, "execute", {"sync_op"}) is False
+
+
+def test_reaches_symbols_async_indirect_helper():
+    """async helper 调用链同样可跟踪（Codex 收尾审 #2）。"""
+    src = ("async def _do(x):\n    return await sync_op(x)\n"
+           "async def execute(self, x):\n    return await _do(x)\n")
+    assert core.reaches_symbols(src, "execute", {"sync_op"}) is True
+
+
 def test_fetch_blocking_recovers_after_retries():
     t = {"v": 0.0}
     attempts = {"n": 0}

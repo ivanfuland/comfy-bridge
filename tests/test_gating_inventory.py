@@ -124,7 +124,8 @@ def _reaches_backend(cls) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == cls.__name__:
             for item in node.body:
-                if isinstance(item, ast.FunctionDef):
+                # 同时识别 async def execute（Codex 收尾审 #2）
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     class_method_names.add(item.name)
             break
     for entry in candidates:
