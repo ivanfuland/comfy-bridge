@@ -197,7 +197,9 @@ linux/restart-all.sh
 
 gating 节点读 ComfyUI 进程的环境变量：
 - `BRIDGE_GATING_URL`（默认 `http://127.0.0.1:8190/comfy-bridge/gating`）：向 bridge 拉取门控规则的接口地址。
-- `BRIDGE_GATING_STARTUP_TIMEOUT`（默认 `180`，单位秒；`0` = 无限阻塞）：启动时等待 bridge 就绪的超时。**超时后 fail-closed——删除全部 api 节点**，防止 api nodes 在 bridge 未就绪时裸露。
+- `BRIDGE_GATING_STARTUP_TIMEOUT`（默认 `180`，单位秒；`0` = 无限阻塞）：启动时等待 bridge 就绪的超时。
+
+> **fail-closed 行为（永不 fail-open）**：以下任一情形都会删除**全部** `comfy_api_nodes` 节点，绝不让禁用节点裸露——bridge 不可达/超时、门控响应非 JSON 或缺字段/字段类型不符（schema 偏差）、剪枝过程异常。仅当门控响应是显式 `gating_enabled:false` 时才不剪枝（用户主动关）。畸形的 `BRIDGE_GATING_STARTUP_TIMEOUT`（非数字/负/nan/inf）回退默认 180s 而非崩溃。
 
 > **正确启动顺序**：先起 bridge（`:8190` 就绪）再起 ComfyUI。`restart-all.bat`（Windows）/ `restart-all.sh`（Linux）已按此顺序执行，并在健康探测通过后才继续。
 
@@ -263,8 +265,9 @@ comfy-bridge/
 │   ├── config.py             #   .env 配置 + 门控基线默认
 │   └── errors.py             #   424 / vendor 错误
 ├── custom_nodes/comfy-bridge-gating/
-│   ├── __init__.py           #   服务端剪枝（厂商隐藏 + 按类硬隐藏）
-│   └── web/...js             #   前端隐藏未授权/不支持的节点
+│   ├── __init__.py           #   import 期接线：阻塞拉门控 → 按 segment 剪枝 / 超时·畸形 fail-closed
+│   ├── _gating_core.py       #   纯判定逻辑（decide_hide/classify_payload/prune…，无副作用，可单测）
+│   └── web/...js             #   前端一次性隐藏（阶段1 未改；后端剪净后基本无作用，去留待阶段2）
 ├── windows/                  # 所有 Windows .bat/.ps1/.vbs 都在这（跨平台，不放根目录）
 │   ├── bootstrap.ps1         #   一键安装（幂等）
 │   ├── doctor.ps1            #   体检
