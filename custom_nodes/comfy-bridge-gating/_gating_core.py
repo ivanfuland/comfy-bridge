@@ -207,6 +207,19 @@ def classify_payload(status, gating):
         return "fail_closed"
     if enabled is False:                     # 显式关闭 → 不剪
         return "skip"
+    # 完整字段类型校验：防 build_ctx 盲目 set() 把 str/scalar 当集合 → 绕过 denylist（Codex 收敛审 #high）。
+    # 如 hidden_node_classes="OpenAIDalle3" 被 set() 拆成字符集合，denylist 失效 → fail-open。
+    for key in ("hidden_node_classes", "allowed_vendors", "capability_managed_node_classes",
+                "loaded_segments", "loaded_node_classes"):
+        val = gating.get(key, [])
+        if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
+            return "fail_closed"
+    vm = gating.get("vendor_meta", {})
+    if not isinstance(vm, dict):
+        return "fail_closed"
+    for m in vm.values():
+        if not isinstance(m, dict) or not isinstance(m.get("python_module_segment"), str):
+            return "fail_closed"
     return "prune"
 
 

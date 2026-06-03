@@ -213,6 +213,18 @@ def test_classify_payload():
     assert core.classify_payload("ok", {"gating_enabled": "yes"}) == "fail_closed"  # 非 bool
     assert core.classify_payload("ok", {"gating_enabled": False}) == "skip"
     assert core.classify_payload("ok", {"gating_enabled": True}) == "prune"
+    # 字段类型校验（Codex 收敛审 #high）：present 但错误类型 → fail_closed（防 set() 拆字符串绕过 denylist）
+    base = {"gating_enabled": True}
+    assert core.classify_payload("ok", {**base, "hidden_node_classes": "OpenAIDalle3"}) == "fail_closed"
+    assert core.classify_payload("ok", {**base, "allowed_vendors": "openai"}) == "fail_closed"
+    assert core.classify_payload("ok", {**base, "loaded_node_classes": [1, 2]}) == "fail_closed"
+    assert core.classify_payload("ok", {**base, "vendor_meta": "x"}) == "fail_closed"
+    assert core.classify_payload("ok", {**base, "vendor_meta": {"openai": {"python_module_segment": 123}}}) == "fail_closed"
+    good = {"gating_enabled": True, "hidden_node_classes": ["OpenAIDalle3"],
+            "allowed_vendors": ["openai"], "capability_managed_node_classes": [],
+            "loaded_segments": ["openai"], "loaded_node_classes": ["OpenAIGPTImage1"],
+            "vendor_meta": {"openai": {"python_module_segment": "openai"}}}
+    assert core.classify_payload("ok", good) == "prune"
 
 
 def test_reaches_symbols_async_entry():
