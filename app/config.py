@@ -53,11 +53,14 @@ DEFAULT_HIDDEN_NODE_CLASSES: list[str] = []
 
 
 def _csv_env(name: str, default: list[str]) -> list[str]:
-    """Parse a comma-separated env override; fall back to default when unset/empty.
-    Override semantics (replace, not append): the .env value, when present, is the
-    full source of truth for that list."""
-    raw = os.getenv(name, "").strip()
-    if not raw:
+    """Parse a comma-separated env override.
+    Distinguish UNSET from EXPLICITLY-EMPTY (Codex round-3/5):
+      env unset (getenv is None)        -> default
+      env present but empty/blank/","   -> [] (caller fail-closes on empty)
+      env present with tokens           -> parsed list
+    Override semantics (replace, not append)."""
+    raw = os.getenv(name)
+    if raw is None:
         return list(default)
     return [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
 
