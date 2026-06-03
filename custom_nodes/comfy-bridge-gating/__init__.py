@@ -25,7 +25,8 @@ _spec.loader.exec_module(_core)
 
 _DEFAULT_URL = "http://127.0.0.1:8190/comfy-bridge/gating"
 _GATING_URL = os.environ.get("BRIDGE_GATING_URL", _DEFAULT_URL)
-_STARTUP_TIMEOUT = float(os.environ.get("BRIDGE_GATING_STARTUP_TIMEOUT", "180"))
+# NOTE: _STARTUP_TIMEOUT is NOT parsed at module top-level to avoid crash→fail-open on malformed env.
+# 畸形值在 _run() 内 parse_timeout() 容错处理（Codex 最终审 #2）。
 
 
 def _http_fetch():
@@ -42,7 +43,9 @@ def _cls_meta_min(name, cls):
 
 
 def _run():
-    _log.info("comfy-bridge gating: using gating URL: %s (timeout=%ss)", _GATING_URL, _STARTUP_TIMEOUT)
+    # 容错解析：畸形 env 值回退默认，不让 import 崩→fail-open（Codex 最终审 #2）
+    timeout = _core.parse_timeout(os.environ.get("BRIDGE_GATING_STARTUP_TIMEOUT"))
+    _log.info("comfy-bridge gating: using gating URL: %s (timeout=%ss)", _GATING_URL, timeout)
     try:
         import nodes
     except Exception as e:
@@ -52,11 +55,11 @@ def _run():
     display = nodes.NODE_DISPLAY_NAME_MAPPINGS
 
     status, gating = _core.fetch_gating_blocking(
-        _http_fetch, _STARTUP_TIMEOUT, clock=time.monotonic, sleep=time.sleep)
+        _http_fetch, timeout, clock=time.monotonic, sleep=time.sleep)
 
     if status == "timeout":
         _log.warning("无法连接 gating %s（%ss 超时）→ fail-closed：删除全部 comfy_api_nodes 节点",
-                     _GATING_URL, _STARTUP_TIMEOUT)
+                     _GATING_URL, timeout)
         removed = _core.fail_closed_prune(mappings, display, cls_meta=_cls_meta_min)
         _log.warning("fail-closed 删除 %d 个 comfy_api_nodes 节点", len(removed))
         return

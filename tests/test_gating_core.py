@@ -146,6 +146,24 @@ def test_reaches_symbols_follows_indirect_helper():
     assert core.reaches_symbols("def run(:::\n", "run", {"sync_op"}) is True  # 解析失败→fail-closed
 
 
+def test_reaches_symbols_class_name_disambiguates():
+    """class_name 参数确保同模块多个同名 execute 方法按类精确定位（Codex 最终审 #1 oracle 修正）。"""
+    src = (
+        "class Bad:\n"
+        "    def execute(self):\n"
+        "        return sync_op()\n"
+        "class Good:\n"
+        "    def execute(self):\n"
+        "        return 1\n"
+    )
+    # 无 class_name → 最后一个 execute 胜出（Bad.execute 被 Good.execute 覆盖 → False）
+    assert core.reaches_symbols(src, "execute", {"sync_op"}) is False
+    # class_name="Bad" → 精确定位到 Bad.execute → True
+    assert core.reaches_symbols(src, "execute", {"sync_op"}, class_name="Bad") is True
+    # class_name="Good" → 精确定位到 Good.execute → False
+    assert core.reaches_symbols(src, "execute", {"sync_op"}, class_name="Good") is False
+
+
 def test_fetch_blocking_returns_ok_immediately():
     calls = {"n": 0}
     def fetch():
@@ -165,6 +183,17 @@ def test_fetch_blocking_times_out():
         raise OSError("connection refused")
     status, payload = core.fetch_gating_blocking(fetch, timeout_s=6, clock=clock, sleep=sleep)
     assert status == "timeout" and payload is None
+
+
+def test_parse_timeout_valid():
+    assert core.parse_timeout("60") == 60.0
+    assert core.parse_timeout("0") == 0.0
+
+
+def test_parse_timeout_invalid_falls_back():
+    assert core.parse_timeout("abc") == 180.0
+    assert core.parse_timeout(None) == 180.0
+    assert core.parse_timeout("") == 180.0
 
 
 def test_fetch_blocking_recovers_after_retries():
