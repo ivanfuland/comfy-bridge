@@ -138,16 +138,35 @@ def node_meta_min(cls):
     return mod, segment_from_module(mod)
 
 
-def reaches_symbols(module_source, entry_name, symbols, max_depth=3):
+def reaches_symbols(module_source, entry_name, symbols, max_depth=3, class_name=None):
     """AST 跟随：从 entry_name 函数出发跟进同模块内 helper 调用，判断是否触达 symbols 任一名字
     （Name 或 Attribute）。源码解析失败 → True（fail-closed）。inventory oracle 与其 fixture
-    共用本函数，避免测试自写一份逻辑（Codex plan #5）。"""
+    共用本函数，避免测试自写一份逻辑（Codex plan #5）。
+
+    class_name: 若指定，优先在该类体内查找 entry_name 方法（避免同模块多个同名方法覆盖，
+    Codex 最终审 #1 oracle 修正）。找不到时回退到模块级函数字典。"""
     import ast
     try:
         tree = ast.parse(module_source)
     except Exception:
         return True
+
+    # 收集模块级函数（含类内方法，后者可能覆盖同名模块级函数，但 helper 跟踪仍需）
     funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+    # 若指定 class_name，优先在目标类体内查找 entry_name（唯一性保证）
+    entry = None
+    if class_name:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                for item in ast.walk(node):
+                    if isinstance(item, ast.FunctionDef) and item.name == entry_name:
+                        entry = item
+                        break
+                break
+
+    if entry is None:
+        entry = funcs.get(entry_name)
 
     def hits(node):
         for sub in ast.walk(node):
@@ -169,8 +188,18 @@ def reaches_symbols(module_source, entry_name, symbols, max_depth=3):
                     return True
         return False
 
-    entry = funcs.get(entry_name)
     return follows(entry, 0) if entry else hits(tree)
+
+
+def parse_timeout(raw, default=180.0):
+    """解析 BRIDGE_GATING_STARTUP_TIMEOUT；畸形值回退默认 + warn（Codex 最终审 #2：不可让 import 崩→fail-open）。"""
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        _log.warning("BRIDGE_GATING_STARTUP_TIMEOUT 无效值 %r，回退默认 %s", raw, default)
+        return default
 
 
 def fetch_gating_blocking(fetch_fn, timeout_s, *, clock, sleep, log_every_s=10.0):

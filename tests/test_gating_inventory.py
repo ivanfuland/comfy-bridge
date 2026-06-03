@@ -37,6 +37,43 @@ def _need(modname):
         pytest.skip(msg)
 
 
+def _load_nodes_with_api():
+    """import nodes 并确保 api nodes 已注册（Codex 最终审 #1：init_builtin_api_nodes 是 async，
+    仅 import nodes 不触发，导致 NODE_CLASS_MAPPINGS 仅含核心节点 → 假绿）。
+
+    comfy_api_nodes/util/client.py 在模块级 `from server import PromptServer`，
+    而 server.py 需要完整 ComfyUI 运行时（aiohttp/PIL/app.frontend_management 等）。
+    解决方案：在调用 init_builtin_api_nodes 之前，把一个轻量 stub 注入
+    sys.modules['server']，阻断该重依赖链，同时不影响节点元数据注册逻辑。"""
+    import sys, types, asyncio
+
+    nodes = _need("nodes")
+    have_api = any(
+        isinstance(getattr(c, "RELATIVE_PYTHON_MODULE", None), str)
+        and getattr(c, "RELATIVE_PYTHON_MODULE", "").startswith("comfy_api_nodes")
+        for c in nodes.NODE_CLASS_MAPPINGS.values()
+    )
+    if not have_api and hasattr(nodes, "init_builtin_api_nodes"):
+        # 注入 server stub，防止 client.py 触发完整 server.py import 链（Codex 最终审 #1）
+        _server_stub = types.ModuleType("server")
+        _server_stub.PromptServer = type("PromptServer", (), {"instance": None})
+        _prev_server = sys.modules.get("server")
+        sys.modules.setdefault("server", _server_stub)
+        try:
+            asyncio.run(nodes.init_builtin_api_nodes())
+        except Exception as e:
+            msg = f"init_builtin_api_nodes 失败：{e}"
+            if _REQUIRE:
+                pytest.fail(msg)
+            else:
+                pytest.skip(msg)
+        finally:
+            # 恢复（若之前有真 server 模块则还原，否则保留 stub 以供后续 import 复用）
+            if _prev_server is not None:
+                sys.modules["server"] = _prev_server
+    return nodes
+
+
 def _auth_enum_keys():
     """从 comfy_api.latest.io.Hidden 枚举提取认证字段名集合。
     上游结构：io.Hidden 是 StrEnum，成员名为小写（auth_token_comfy_org / api_key_comfy_org），
@@ -63,16 +100,44 @@ def test_auth_key_contract_matches_upstream():
 
 
 def _reaches_backend(cls) -> bool:
+    """判断节点类是否触达后端符号。
+    传入 class_name 以正确定位模块内同名方法（Codex 最终审 #1 oracle 修正：
+    同模块多个类各有 execute 时，dict 覆盖导致错误命中）。
+    FUNCTION 可能是框架动态注入的名字（如 EXECUTE_NORMALIZED），不在源码中出现；
+    此时回退到 'execute'，仍限定在 class_name 范围内。
+    只有当入口函数真正在源码中找到时，reaches_symbols 结果才可信；
+    否则其 hits(tree) 回退会误判整个模块（含无关类的 sync_op）。"""
+    import ast
+    fn_attr = getattr(cls, "FUNCTION", "execute")
+    # 候选 entry name 列表：先尝试 FUNCTION 属性值，再尝试 "execute"
+    candidates = [fn_attr] if fn_attr == "execute" else [fn_attr, "execute"]
     try:
         src = inspect.getsource(inspect.getmodule(cls))
     except Exception:
-        return True
-    entry = getattr(cls, "FUNCTION", "execute")
-    return core.reaches_symbols(src, entry, _BACKEND_SYMBOLS)
+        return True  # fail-closed
+    # 解析模块 AST，确认入口函数是否真实存在于该类内
+    try:
+        tree = ast.parse(src)
+    except Exception:
+        return True  # fail-closed（解析失败）
+    class_method_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == cls.__name__:
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef):
+                    class_method_names.add(item.name)
+            break
+    for entry in candidates:
+        if entry not in class_method_names:
+            continue  # 跳过不存在的入口，避免 hits(tree) 误判全模块
+        if core.reaches_symbols(src, entry, _BACKEND_SYMBOLS, class_name=cls.__name__):
+            return True
+    # 若所有候选入口均不在类内，fail-open（保守：非预期情况，报告 False 避免误报）
+    return False
 
 
 def _iter_allowed_vendor_nodes():
-    nodes = _need("nodes")
+    nodes = _load_nodes_with_api()   # 保证 api nodes 已注册（Codex 最终审 #1）
     from app.config import DEFAULT_ALLOWED_VENDORS
     allowed = set(DEFAULT_ALLOWED_VENDORS)
     for name, cls in nodes.NODE_CLASS_MAPPINGS.items():
@@ -93,8 +158,18 @@ def test_every_backend_node_is_governed():
     from app.config import DEFAULT_HIDDEN_NODE_CLASSES
     supported = _all_supported()
     denylist = set(DEFAULT_HIDDEN_NODE_CLASSES)
+    # 先实体化，避免两次遍历生成器（_load_nodes_with_api 有副作用 asyncio.run，只应触发一次）
+    items = list(_iter_allowed_vendor_nodes())
+    names = {name for name, _ in items}
+    # 防假绿（Codex 最终审 #1）：必须真正扫到上游 api 节点；若仅扫到 0 个允许厂商节点，
+    # 这两条 assert 也会失败并给出明确诊断。
+    assert "OpenAIGPTImage1" in names, (
+        f"inventory 未扫到 api nodes（仅 {len(names)} 个允许厂商节点），"
+        "请确认在 ComfyUI venv 下运行并设置 COMFYUI_REQUIRE_INVENTORY=1")
+    assert "ByteDanceCreateImageAsset" in names, (
+        f"inventory 未扫到 ByteDance api nodes（names={sorted(names)[:10]}…）")
     offenders = []
-    for name, cls in _iter_allowed_vendor_nodes():
+    for name, cls in items:
         is_backend = (bool(getattr(cls, "API_NODE", False))
                       or core.has_api_auth_input(cls)
                       or _reaches_backend(cls))
@@ -107,7 +182,7 @@ def test_every_backend_node_is_governed():
 def test_exempt_helpers_have_no_backend_path():
     if not PURE_HELPER_EXEMPT:
         pytest.skip("PURE_HELPER_EXEMPT 为空")
-    nodes = _need("nodes")
+    nodes = _load_nodes_with_api()
     bad = [n for n in PURE_HELPER_EXEMPT
            if n in nodes.NODE_CLASS_MAPPINGS and _reaches_backend(nodes.NODE_CLASS_MAPPINGS[n])]
     assert not bad, f"以下豁免 helper 实际触达后端路径：{bad}"
