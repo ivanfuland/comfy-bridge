@@ -81,3 +81,28 @@ def test_gating_endpoint_off(monkeypatch):
     r = c.get("/comfy-bridge/gating")
     assert r.status_code == 200
     assert r.json()["gating_enabled"] is False
+
+
+def test_gating_exposes_capability_managed_and_loaded_segments(monkeypatch):
+    c = _client(monkeypatch, BRIDGE_GATING="on")
+    body = c.get("/comfy-bridge/gating").json()
+    assert "capability_managed_node_classes" in body
+    assert "ByteDanceCreateImageAsset" in body["capability_managed_node_classes"]
+    assert "OpenAIInputFiles" not in body["capability_managed_node_classes"]
+    assert "loaded_segments" in body
+    assert isinstance(body["loaded_segments"], list)
+
+
+def test_loaded_segments_requires_full_route_keys(monkeypatch):
+    # byteplus 的 expected_route_keys = [byteplus, byteplus-seedance2, seedance]（Codex plan #3 / spec §6 9b）
+    from app import adapters
+    c = _client(monkeypatch, BRIDGE_GATING="on")          # 先 reload，再 monkeypatch（gating() 函数内 from-import 取当前值）
+    monkeypatch.setattr(adapters, "_LOADED_BACKEND_CHOICES", {"byteplus": "native"}, raising=False)
+    monkeypatch.setattr(adapters, "_REGISTRY", {"byteplus": object()}, raising=False)
+    assert "bytedance" not in c.get("/comfy-bridge/gating").json()["loaded_segments"]
+    monkeypatch.setattr(
+        adapters, "_REGISTRY",
+        {"byteplus": object(), "byteplus-seedance2": object(), "seedance": object()},
+        raising=False,
+    )
+    assert "bytedance" in c.get("/comfy-bridge/gating").json()["loaded_segments"]
