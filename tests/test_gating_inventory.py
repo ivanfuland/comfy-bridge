@@ -47,6 +47,19 @@ def _load_nodes_with_api():
     sys.modules['server']，阻断该重依赖链，同时不影响节点元数据注册逻辑。"""
     import sys, types, asyncio
 
+    # CI/无 GPU 环境:ComfyUI model_management 在 import 期调 torch.cuda.current_device()，
+    # cpu-only torch 会抛 "Torch not compiled with CUDA enabled"。先强制 ComfyUI CPU 模式
+    # （args.cpu=True，让 get_torch_device 返回 cpu，不碰 CUDA）。
+    _saved_argv = sys.argv
+    sys.argv = [sys.argv[0] if sys.argv else "pytest", "--cpu"]
+    try:
+        from comfy.cli_args import args as _comfy_args
+        _comfy_args.cpu = True
+    except Exception:
+        pass
+    finally:
+        sys.argv = _saved_argv
+
     nodes = _need("nodes")
     have_api = any(
         isinstance(getattr(c, "RELATIVE_PYTHON_MODULE", None), str)
