@@ -27,8 +27,8 @@ jobs:
 
   # inventory 守护必须在真实 ComfyUI 环境跑（Codex PR审 #2）：否则 test_gating_inventory.py
   # 因 import 失败而静默 skip，schema-drift 守护形同虚设。此 job 强制 COMFYUI_REQUIRE_INVENTORY=1，
-  # import 失败即 FAIL。注：ComfyUI 未 pin（用 master），若上游结构/认证字段漂移导致 FAIL，
-  # 那正是本守护要暴露的信号；maintainer 可改为 pin 到目标 ComfyUI 版本。
+  # import 失败即 FAIL。ComfyUI pin 到生产部署版本 v0.22.3（与本地/部署一致，避免 latest 的
+  # 未来新节点引入噪音）；升级 ComfyUI 时同步更新此 ref + bridge 的 supported_node_classes。
   inventory:
     runs-on: ubuntu-latest
     steps:
@@ -43,6 +43,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: comfyanonymous/ComfyUI
+          ref: v0.22.3            # pin 到生产部署版本（与 F:/comfyui-workspace/ComfyUI 一致）
           path: comfyui-src
 
       - name: Install bridge + ComfyUI (cpu torch)
