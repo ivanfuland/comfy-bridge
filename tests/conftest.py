@@ -39,3 +39,11 @@ def _isolate_bridge_env(monkeypatch):
     monkeypatch.setenv("BRIDGE_SKIP_DOTENV", "1")
     for v in _BRIDGE_VARS:
         monkeypatch.delenv(v, raising=False)
+
+
+import os
+import sys
+
+_comfy = os.environ.get("COMFYUI_PATH", r"F:/comfyui-workspace/ComfyUI")
+if _comfy and os.path.isdir(_comfy) and _comfy not in sys.path:
+    sys.path.insert(0, _comfy)  # 使 inventory 能 import ComfyUI 的 nodes/comfy_api

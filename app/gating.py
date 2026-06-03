@@ -42,6 +42,24 @@ async def gating() -> dict:
         if backend_spec is not None:
             loaded_node_classes.update(backend_spec["supported_node_classes"])
 
+    # capability_managed: 所有 vendor 所有 backend 的 supported 并集（is_backend_node 信号②）
+    capability_managed: set[str] = set()
+    for vspec in _BACKEND_REGISTRY.values():
+        for backend_spec in vspec["backends"].values():
+            capability_managed.update(backend_spec["supported_node_classes"])
+
+    # loaded_segments: backend import 且 expected_route_keys 全注册 的 segment（Codex 五轮 #1）
+    _route_key_set = set(_REGISTRY.keys())
+    loaded_segments: set[str] = set()
+    for vendor in _LOADED_BACKEND_CHOICES:
+        vspec = _BACKEND_REGISTRY.get(vendor)
+        if vspec is None:
+            continue
+        expected = set(vspec["expected_route_keys"])
+        if expected <= _route_key_set:
+            loaded_segments.add(vspec["python_module_segment"])
+        # else: 部分加载 → 不计入（其后端节点将被节点端 fail-closed）
+
     return {
         # vendor allowlist + class denylist (no per-class allowlist / grey state)
         "gating_enabled": cfg.gating_enabled,
@@ -51,4 +69,6 @@ async def gating() -> dict:
         "loaded_route_keys": loaded_route_keys,
         "vendor_meta": vendor_meta,
         "loaded_node_classes": sorted(loaded_node_classes),
+        "capability_managed_node_classes": sorted(capability_managed),
+        "loaded_segments": sorted(loaded_segments),
     }

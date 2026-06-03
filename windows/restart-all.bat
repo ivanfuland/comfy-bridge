@@ -35,6 +35,9 @@ echo.
 echo [3/3] Starting ComfyUI (:8188) in this window ...
 echo       After it loads, HARD-REFRESH the browser:  Ctrl+Shift+R
 echo.
+REM gating node runs in the ComfyUI process; bridge .env is not visible there,
+REM so inject the (already-probed :8190) gating URL explicitly.
+set "BRIDGE_GATING_URL=http://127.0.0.1:8190/comfy-bridge/gating"
 cd /d "%~dp0..\..\ComfyUI"
 call .venv\Scripts\activate.bat
 python main.py --listen 127.0.0.1 --port 8188 --comfy-api-base=http://127.0.0.1:8190
