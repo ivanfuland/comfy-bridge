@@ -207,14 +207,15 @@ def classify_payload(status, gating):
         return "fail_closed"
     if enabled is False:                     # 显式关闭 → 不剪
         return "skip"
-    # 完整字段类型校验：防 build_ctx 盲目 set() 把 str/scalar 当集合 → 绕过 denylist（Codex 收敛审 #high）。
-    # 如 hidden_node_classes="OpenAIDalle3" 被 set() 拆成字符集合，denylist 失效 → fail-open。
+    # 完整字段校验：所有 build_ctx 消费字段必须【存在且类型正确】（Codex 收敛审 #high + PR 审 #high）。
+    # 缺失字段同样 fail_closed——端点 regress/漏字段(如漏 hidden_node_classes)否则会绕过 denylist；
+    # 错误类型(如 hidden_node_classes="OpenAIDalle3" 被 set() 拆成字符集合)同样 fail-open。
     for key in ("hidden_node_classes", "allowed_vendors", "capability_managed_node_classes",
                 "loaded_segments", "loaded_node_classes"):
-        val = gating.get(key, [])
+        val = gating.get(key)                    # 无默认：缺失 → None → fail_closed
         if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
             return "fail_closed"
-    vm = gating.get("vendor_meta", {})
+    vm = gating.get("vendor_meta")               # 无默认：缺失 → None → fail_closed
     if not isinstance(vm, dict):
         return "fail_closed"
     for m in vm.values():

@@ -205,26 +205,30 @@ def test_parse_timeout_non_finite_and_negative():
 
 
 def test_classify_payload():
-    """payload 分类器：畸形→fail_closed，显式 False→skip，True→prune（Codex 收尾审 #1）。"""
+    """payload 分类器：畸形/缺字段→fail_closed，显式 False→skip，完整→prune（Codex 收尾审#1 + 收敛审 + PR审#high）。"""
     assert core.classify_payload("timeout", None) == "fail_closed"
     assert core.classify_payload("ok", []) == "fail_closed"
     assert core.classify_payload("ok", "x") == "fail_closed"
-    assert core.classify_payload("ok", {}) == "fail_closed"                    # 缺 gating_enabled
-    assert core.classify_payload("ok", {"gating_enabled": "yes"}) == "fail_closed"  # 非 bool
+    assert core.classify_payload("ok", {}) == "fail_closed"                          # 缺 gating_enabled
+    assert core.classify_payload("ok", {"gating_enabled": "yes"}) == "fail_closed"   # 非 bool
     assert core.classify_payload("ok", {"gating_enabled": False}) == "skip"
-    assert core.classify_payload("ok", {"gating_enabled": True}) == "prune"
-    # 字段类型校验（Codex 收敛审 #high）：present 但错误类型 → fail_closed（防 set() 拆字符串绕过 denylist）
-    base = {"gating_enabled": True}
-    assert core.classify_payload("ok", {**base, "hidden_node_classes": "OpenAIDalle3"}) == "fail_closed"
-    assert core.classify_payload("ok", {**base, "allowed_vendors": "openai"}) == "fail_closed"
-    assert core.classify_payload("ok", {**base, "loaded_node_classes": [1, 2]}) == "fail_closed"
-    assert core.classify_payload("ok", {**base, "vendor_meta": "x"}) == "fail_closed"
-    assert core.classify_payload("ok", {**base, "vendor_meta": {"openai": {"python_module_segment": 123}}}) == "fail_closed"
+    # gating_enabled=True 但缺其余字段 → fail_closed（PR审#high：缺字段不得 fail-open）
+    assert core.classify_payload("ok", {"gating_enabled": True}) == "fail_closed"
     good = {"gating_enabled": True, "hidden_node_classes": ["OpenAIDalle3"],
             "allowed_vendors": ["openai"], "capability_managed_node_classes": [],
             "loaded_segments": ["openai"], "loaded_node_classes": ["OpenAIGPTImage1"],
             "vendor_meta": {"openai": {"python_module_segment": "openai"}}}
     assert core.classify_payload("ok", good) == "prune"
+    # 缺任一 build_ctx 消费字段 → fail_closed（逐字段 negative，PR审#high）
+    for key in ("hidden_node_classes", "allowed_vendors", "capability_managed_node_classes",
+                "loaded_segments", "loaded_node_classes", "vendor_meta"):
+        bad = dict(good); del bad[key]
+        assert core.classify_payload("ok", bad) == "fail_closed", f"缺 {key} 应 fail_closed"
+    # present 但错误类型 → fail_closed（防 set() 拆字符串绕过 denylist，收敛审#high）
+    assert core.classify_payload("ok", {**good, "hidden_node_classes": "OpenAIDalle3"}) == "fail_closed"
+    assert core.classify_payload("ok", {**good, "loaded_node_classes": [1, 2]}) == "fail_closed"
+    assert core.classify_payload("ok", {**good, "vendor_meta": "x"}) == "fail_closed"
+    assert core.classify_payload("ok", {**good, "vendor_meta": {"openai": {"python_module_segment": 123}}}) == "fail_closed"
 
 
 def test_reaches_symbols_async_entry():
