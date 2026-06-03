@@ -171,3 +171,22 @@ def reaches_symbols(module_source, entry_name, symbols, max_depth=3):
 
     entry = funcs.get(entry_name)
     return follows(entry, 0) if entry else hits(tree)
+
+
+def fetch_gating_blocking(fetch_fn, timeout_s, *, clock, sleep, log_every_s=10.0):
+    """阻塞重试直到 fetch_fn() 成功或超时。timeout_s==0 → 无限阻塞。
+    fetch_fn 抛异常视为未就绪。返回 ("ok", payload) 或 ("timeout", None)。
+    clock/sleep 注入以便测试（生产传 time.monotonic / time.sleep）。"""
+    start = clock()
+    last_log = start
+    while True:
+        try:
+            return ("ok", fetch_fn())
+        except Exception:
+            now = clock()
+            if timeout_s and (now - start) >= timeout_s:
+                return ("timeout", None)
+            if (now - last_log) >= log_every_s:
+                _log.info("等待 bridge gating 就绪…")
+                last_log = now
+            sleep(2.0)

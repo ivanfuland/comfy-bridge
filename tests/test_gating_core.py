@@ -144,3 +144,37 @@ def test_reaches_symbols_follows_indirect_helper():
     assert core.reaches_symbols(src, "run", {"sync_op"}) is True
     assert core.reaches_symbols("def run(self):\n    return 1\n", "run", {"sync_op"}) is False
     assert core.reaches_symbols("def run(:::\n", "run", {"sync_op"}) is True  # 解析失败→fail-closed
+
+
+def test_fetch_blocking_returns_ok_immediately():
+    calls = {"n": 0}
+    def fetch():
+        calls["n"] += 1
+        return {"gating_enabled": True}
+    status, payload = core.fetch_gating_blocking(fetch, timeout_s=10, clock=lambda: 0.0, sleep=lambda s: None)
+    assert status == "ok" and payload == {"gating_enabled": True} and calls["n"] == 1
+
+
+def test_fetch_blocking_times_out():
+    t = {"v": 0.0}
+    def clock():
+        return t["v"]
+    def sleep(s):
+        t["v"] += s
+    def fetch():
+        raise OSError("connection refused")
+    status, payload = core.fetch_gating_blocking(fetch, timeout_s=6, clock=clock, sleep=sleep)
+    assert status == "timeout" and payload is None
+
+
+def test_fetch_blocking_recovers_after_retries():
+    t = {"v": 0.0}
+    attempts = {"n": 0}
+    def fetch():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise OSError("not ready")
+        return {"gating_enabled": True}
+    status, payload = core.fetch_gating_blocking(
+        fetch, timeout_s=60, clock=lambda: t["v"], sleep=lambda s: t.__setitem__("v", t["v"] + s))
+    assert status == "ok" and attempts["n"] == 3

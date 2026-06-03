@@ -1,21 +1,12 @@
-"""comfy-bridge gating extension. Two interventions:
-
-1) Web extension (web/comfy-bridge-gating.js) -- hides (removes from the menu)
-   api_nodes whose vendor isn't allowed, that are on the hidden denylist, or that
-   the loaded backend doesn't support. There is no grey "未适配" state.
-
-2) Python side (this file) -- at custom_nodes load time, remove disallowed-
-   vendor api_node classes from nodes.NODE_CLASS_MAPPINGS so the new Vue
-   "合作伙伴节点" panel (which reads /object_info) and the LiteGraph registry
-   both lose them in one shot. Loading order is fine: init_builtin_api_nodes()
-   has already populated NODE_CLASS_MAPPINGS by the time custom_nodes load
-   (see ComfyUI/nodes.py:init_extra_nodes).
-
-Single source of truth: http://127.0.0.1:8190/comfy-bridge/gating
-(returns {gating_enabled, allowed_vendors, hidden_node_classes, ...}). On bridge
-unreachable: fail-open -- no pruning (don't lock the user out)."""
+"""comfy-bridge gating custom node（后端剪枝）。纯逻辑见 _gating_core。
+import 期：阻塞拉取 <BRIDGE_GATING_URL>/comfy-bridge/gating，按 segment + 多信号
+is_backend_node + per-segment loaded_segments 从 nodes.NODE_CLASS_MAPPINGS 删类，
+使 /object_info 干净。超时/不可达 → fail-closed（删全部 comfy_api_nodes）。见 spec v6。"""
+import importlib.util
 import json
 import logging
+import os
+import pathlib
 import time
 import urllib.request
 
@@ -24,102 +15,59 @@ NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
-_BRIDGE_GATING_URL = "http://127.0.0.1:8190/comfy-bridge/gating"
 _log = logging.getLogger("comfy-bridge-gating")
 
+# 目录名带连字符，非合法包名 → 用 importlib 从同目录文件加载纯逻辑模块。
+_spec = importlib.util.spec_from_file_location(
+    "comfy_bridge_gating_core", str(pathlib.Path(__file__).parent / "_gating_core.py"))
+_core = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_core)
 
-def _fetch_gating(retries=8, delay=2.0):
-    """Fetch the gating allowlist, retrying while the bridge comes up.
-
-    ComfyUI is usually launched after the bridge (Task Scheduler @logon), but there's a
-    startup race: if ComfyUI loads custom_nodes before the bridge's uvicorn is ready, a
-    single 2s probe fails -> fail-open -> the menu shows ALL ~192 api_nodes for the whole
-    session. Retrying (~8 x 2s ≈ 16s) lets ComfyUI wait out a slow/just-starting bridge.
-    Note: this only affects menu gating; credit protection comes from --comfy-api-base
-    (request routing), so fail-open never leaks to comfy.org billing."""
-    last_err = None
-    for attempt in range(retries):
-        try:
-            with urllib.request.urlopen(_BRIDGE_GATING_URL, timeout=2) as r:
-                if attempt:
-                    _log.info(f"gating reachable after {attempt} retr{'y' if attempt == 1 else 'ies'}")
-                return json.loads(r.read())
-        except Exception as e:
-            last_err = e
-            if attempt < retries - 1:
-                time.sleep(delay)
-    _log.warning(f"gating fetch failed after {retries} attempts - fail-open: {last_err}")
-    return None
+_DEFAULT_URL = "http://127.0.0.1:8190/comfy-bridge/gating"
+_GATING_URL = os.environ.get("BRIDGE_GATING_URL", _DEFAULT_URL)
+_STARTUP_TIMEOUT = float(os.environ.get("BRIDGE_GATING_STARTUP_TIMEOUT", "180"))
 
 
-def _vendor_from_module(mod):
-    if isinstance(mod, str) and mod.startswith("comfy_api_nodes.nodes_"):
-        return mod[len("comfy_api_nodes.nodes_"):].lower()
-    return None
+def _http_fetch():
+    with urllib.request.urlopen(_GATING_URL, timeout=2) as r:
+        return json.loads(r.read())
 
 
-def _prune_disallowed_api_nodes():
-    gating = _fetch_gating()
-    if not gating or not gating.get("gating_enabled"):
-        _log.info("gating disabled or unreachable - no pruning")
-        return
-    allowed_vendors = set(gating.get("allowed_vendors", []))
-    if not allowed_vendors:
-        _log.warning("allowed_vendors is empty - skipping prune to avoid lockout")
-        return
-    # Per-class hard-hide denylist: classes of an ALLOWED vendor that the gateway can't
-    # serve (e.g. dall-e on a gpt-image-only gateway). Pruned here server-side so the Vue
-    # panel (reads /object_info) loses them too -- the web JS hideClass only touches the
-    # LiteGraph registry, which the new node-library panel does NOT read from.
-    hidden_classes = set(gating.get("hidden_node_classes", []))
-    # Capability authority (Codex H-1): classes the loaded backends actually support, plus the
-    # set of vendors that have a registered backend. An allowed-vendor class the loaded backend
-    # does NOT support is hidden server-side too (matches web/comfy-bridge-gating.js), so the Vue
-    # "合作伙伴节点" panel (reads /object_info from NODE_CLASS_MAPPINGS) loses it as well.
-    # Guard: skip capability hiding when loaded_node_classes is empty (e.g. adapters failed to
-    # load) so we never hide an allowed vendor's whole node set.
-    loaded_node_classes = set(gating.get("loaded_node_classes", []))
-    vendor_meta = gating.get("vendor_meta", {}) or {}
-    backend_vendors = {m.get("python_module_segment") for m in vendor_meta.values() if isinstance(m, dict)}
-    apply_capability = bool(loaded_node_classes)
+def _cls_meta(name, cls):
+    return _core.node_meta(cls)          # 短路非 comfy_api 节点 + __module__ 兜底（Codex plan #1/#2）
+
+
+def _cls_meta_min(name, cls):
+    return _core.node_meta_min(cls)      # __module__ 兜底，fail-closed 路径不漏（Codex plan #2）
+
+
+def _run():
+    _log.info("comfy-bridge gating: using gating URL: %s (timeout=%ss)", _GATING_URL, _STARTUP_TIMEOUT)
     try:
         import nodes
     except Exception as e:
-        _log.warning(f"cannot import nodes module: {e}")
+        _log.warning("cannot import nodes module: %s — skip gating", e)
         return
-    removed = 0
-    removed_hidden = 0
-    removed_capability = 0
-    kept_vendors = set()
-    for name in list(nodes.NODE_CLASS_MAPPINGS.keys()):
-        cls = nodes.NODE_CLASS_MAPPINGS[name]
-        if not getattr(cls, "API_NODE", False):
-            continue
-        # use RELATIVE_PYTHON_MODULE (set by nodes.py:2245 + 2273), NOT __module__:
-        # server.py:721 reads exactly this attr to populate /object_info["python_module"].
-        vendor = _vendor_from_module(getattr(cls, "RELATIVE_PYTHON_MODULE", None))
-        if name in hidden_classes:
-            del nodes.NODE_CLASS_MAPPINGS[name]
-            nodes.NODE_DISPLAY_NAME_MAPPINGS.pop(name, None)
-            removed_hidden += 1
-            continue
-        if vendor in allowed_vendors:
-            # capability: vendor has a backend but the loaded backend doesn't support this class
-            if apply_capability and vendor in backend_vendors and name not in loaded_node_classes:
-                del nodes.NODE_CLASS_MAPPINGS[name]
-                nodes.NODE_DISPLAY_NAME_MAPPINGS.pop(name, None)
-                removed_capability += 1
-                continue
-            kept_vendors.add(vendor)
-            continue
-        del nodes.NODE_CLASS_MAPPINGS[name]
-        nodes.NODE_DISPLAY_NAME_MAPPINGS.pop(name, None)
-        removed += 1
-    _log.info(
-        f"pruned {removed} disallowed-vendor + {removed_hidden} hard-hidden "
-        f"+ {removed_capability} backend-unsupported api_node classes "
-        f"(kept vendors: {sorted(kept_vendors)})"
-    )
+    mappings = nodes.NODE_CLASS_MAPPINGS
+    display = nodes.NODE_DISPLAY_NAME_MAPPINGS
+
+    status, gating = _core.fetch_gating_blocking(
+        _http_fetch, _STARTUP_TIMEOUT, clock=time.monotonic, sleep=time.sleep)
+
+    if status == "timeout":
+        _log.warning("无法连接 gating %s（%ss 超时）→ fail-closed：删除全部 comfy_api_nodes 节点",
+                     _GATING_URL, _STARTUP_TIMEOUT)
+        removed = _core.fail_closed_prune(mappings, display, cls_meta=_cls_meta_min)
+        _log.warning("fail-closed 删除 %d 个 comfy_api_nodes 节点", len(removed))
+        return
+
+    if not gating.get("gating_enabled"):
+        _log.info("gating disabled — no pruning")
+        return
+
+    removed = _core.prune(mappings, display, gating, cls_meta=_cls_meta)
+    _log.info("gating 剪枝完成：删除 %d 个节点（allowed=%s, loaded_segments=%s）",
+              len(removed), gating.get("allowed_vendors"), gating.get("loaded_segments"))
 
 
-_prune_disallowed_api_nodes()
+_run()
